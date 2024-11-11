@@ -2,6 +2,7 @@
 # import argparse
 import copy
 from collections import defaultdict, OrderedDict
+
 # from itertools import islice, product
 # import random
 # import json
@@ -21,7 +22,8 @@ print(f"Using device: {device}")
 dtype = torch.float32
 torch.set_default_dtype(dtype)
 
-def get_batch(n_tasks, n, Ss, codes, sizes, device='cpu', dtype=torch.float32):
+
+def get_batch(n_tasks, n, Ss, codes, sizes, device="cpu", dtype=torch.float32):
     """Creates batch.
 
     Parameters
@@ -54,18 +56,22 @@ def get_batch(n_tasks, n, Ss, codes, sizes, device='cpu', dtype=torch.float32):
         labels
     """
     assert len(codes) == len(sizes)
-    assert len(Ss) <= n_tasks # allow inequality ever?
-    assert 0 <= max([max(code) for code in codes]) < len(Ss) # codes are incides of Ss
-    x = torch.zeros((sum(sizes), n_tasks+n), dtype=dtype, device=device)
+    assert len(Ss) <= n_tasks  # allow inequality ever?
+    assert 0 <= max([max(code) for code in codes]) < len(Ss)  # codes are incides of Ss
+    x = torch.zeros((sum(sizes), n_tasks + n), dtype=dtype, device=device)
     y = torch.zeros((sum(sizes),), dtype=torch.int64, device=device)
-    x[:, n_tasks:] = torch.randint(low=0, high=2, size=(sum(sizes), n), dtype=dtype, device=device)
+    x[:, n_tasks:] = torch.randint(
+        low=0, high=2, size=(sum(sizes), n), dtype=dtype, device=device
+    )
     idx = 0
     for code, size in zip(codes, sizes):
         if size > 0:
-            S = sum([Ss[c] for c in code], []) # union of subtasks
-            assert len(S) == len(set(S)) # confirm disjointness
-            x[idx:idx+size, code] = 1
-            y[idx:idx+size] = torch.sum(x[idx:idx+size, n_tasks:][:, S], dim=1) % 2
+            S = sum([Ss[c] for c in code], [])  # union of subtasks
+            assert len(S) == len(set(S))  # confirm disjointness
+            x[idx : idx + size, code] = 1
+            y[idx : idx + size] = (
+                torch.sum(x[idx : idx + size, n_tasks:][:, S], dim=1) % 2
+            )
             idx += size
     return x, y
 
@@ -90,7 +96,7 @@ def construct_mlp(layer_sizes, activation=nn.ReLU):
     """
     layers = OrderedDict()
     for i in range(len(layer_sizes) - 1):
-        layers[f"fc{i}"] = nn.Linear(layer_sizes[i], layer_sizes[i+1])
+        layers[f"fc{i}"] = nn.Linear(layer_sizes[i], layer_sizes[i + 1])
         if i < len(layer_sizes) - 2:  # Don't add activation after the last layer
             layers[f"act{i}"] = activation()
     return nn.Sequential(layers)
@@ -100,35 +106,60 @@ depth = 3
 width = 2048
 activation_fn = nn.ReLU
 
-n_tasks = 24 # number of atomic subtasks
-n = 96       # 24 * 4
-Ss = [[i, i+1, i+2, i+3] for i in range(0, 24*4, 4)]
+n_tasks = 24  # number of atomic subtasks
+n = 96  # 24 * 4
+Ss = [[i, i + 1, i + 2, i + 3] for i in range(0, 24 * 4, 4)]
 codes = [
-    [0], [1], [2], [3],
-    [0, 1], [2, 3],
+    [0],
+    [1],
+    [2],
+    [3],
+    [0, 1],
+    [2, 3],
     [0, 1, 2, 3],
-    [4], [5], [6], [7],
-    [4, 5], [6, 7],
+    [4],
+    [5],
+    [6],
+    [7],
+    [4, 5],
+    [6, 7],
     [4, 5, 6, 7],
-    [8], [9], [10], [11],
-    [8, 9], [10, 11],
+    [8],
+    [9],
+    [10],
+    [11],
+    [8, 9],
+    [10, 11],
     [8, 9, 10, 11],
-    [12], [13], [14], [15],
-    [12, 13], [14, 15],
+    [12],
+    [13],
+    [14],
+    [15],
+    [12, 13],
+    [14, 15],
     [12, 13, 14, 15],
-    [16], [17], [18], [19],
-    [16, 17], [18, 19],
+    [16],
+    [17],
+    [18],
+    [19],
+    [16, 17],
+    [18, 19],
     [16, 17, 18, 19],
-    [20], [21], [22], [23],
-    [20, 21], [22, 23],
-    [20, 21, 22, 23]
+    [20],
+    [21],
+    [22],
+    [23],
+    [20, 21],
+    [22, 23],
+    [20, 21, 22, 23],
 ]
 train_sizes = [2_000] * len(codes)
 
-mlp = construct_mlp(
-    [n_tasks + n] + [width] * (depth - 1) + [2], 
-    activation_fn
-).to(dtype).to(device)
+mlp = (
+    construct_mlp([n_tasks + n] + [width] * (depth - 1) + [2], activation_fn)
+    .to(dtype)
+    .to(device)
+)
 
 # compute total number of parameters in MLP
 ps = 0
@@ -145,7 +176,9 @@ subtask_losses = defaultdict(list)
 for step in tqdm(range(30_000)):
     with torch.no_grad():
         for i, code in enumerate(codes):
-            x, y = get_batch(n_tasks, n, Ss, [code], [train_sizes[i]], device=device, dtype=dtype)
+            x, y = get_batch(
+                n_tasks, n, Ss, [code], [train_sizes[i]], device=device, dtype=dtype
+            )
             y_pred = mlp(x)
             subtask_losses[i].append(loss_fn(y_pred, y).item())
     x, y = get_batch(n_tasks, n, Ss, codes, train_sizes, device=device, dtype=dtype)
@@ -159,11 +192,14 @@ for step in tqdm(range(30_000)):
 
 # save pretraining metrics
 with open("pretrain_metrics.pkl", "wb") as f:
-    pickle.dump({
-        "steps": steps,
-        "losses": losses,
-        "subtask_losses": subtask_losses,
-    }, f)
+    pickle.dump(
+        {
+            "steps": steps,
+            "losses": losses,
+            "subtask_losses": subtask_losses,
+        },
+        f,
+    )
 
 # save pretraining model (cpu)
 torch.save(mlp.cpu().state_dict(), "pretrain_model.pth")
