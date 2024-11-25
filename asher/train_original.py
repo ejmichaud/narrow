@@ -80,7 +80,7 @@ def main():
     learning_rate = 0.01
     num_epochs = 5
     print_interval = 100
-    hidden_dims = [1200, 1200]
+    hidden_dims = [20, 10]
 
     # Data loading & preprocessing
     transform = transforms.ToTensor()
@@ -98,16 +98,22 @@ def main():
     optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
 
     # Training loop
+    total_data_points = 0
     for epoch in range(1, num_epochs + 1):
         train(model, device, train_loader, optimizer, epoch, print_interval)
+        accuracy = test(model, device, test_loader)
 
-    # Final test
-    test(model, device, test_loader)
+        # Check if test accuracy threshold is reached
+        if accuracy >= 98.5:
+            print(f"Reached desired test accuracy of {accuracy:.2f}% at epoch {epoch}")
+            total_data_points = epoch * len(train_loader.dataset)
+            print(f"Total number of data points required: {total_data_points}")
+            break
 
     # Save model
     os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/original_model.pth")
-    print("Saved original model to models/original_model.pth")
+    torch.save(model.state_dict(), f"models/size_{hidden_dims[0]}.pth")
+    print(f"Saved original model to models/size_{hidden_dims[0]}.pth")
 
 
 if __name__ == "__main__":
