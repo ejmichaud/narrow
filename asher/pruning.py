@@ -72,7 +72,7 @@ class Net(nn.Module):
         return active_neurons
 
 
-# options: l1, tied_l1, tied_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_l2, tied_l2_with_lhalf
+# options: l1, tied_l1, tied_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_l2, tied_l2_with_lhalf, tied_l1_with_lhalf
 def pruning_loss(model, penalty_type="tied_l2_with_l2"):
     penalty = 0.0
     for i in range(len(model.fc_layers)):
@@ -127,12 +127,19 @@ def pruning_loss(model, penalty_type="tied_l2_with_l2"):
             inverse_l1_of_l1 = l1 / ((torch.norm(l1, p=1, dim=0).sum()) ** 0.2)
             penalty = penalty + inverse_l1_of_l1.sum() / (W1.numel() + W2.numel())
 
-        # lhalf of L2s of tied weights — LOSS IS NAN SOMETHING IS WRONG
+        # lhalf of L2s of tied weights
         elif penalty_type == "tied_l2_with_lhalf":
             combined = torch.cat([W1, W2.t()], dim=1)
             l2 = torch.norm(combined, p=2, dim=1)
             lhalf_of_l2 = torch.norm(l2, p=0.5, dim=0)
             penalty = penalty + lhalf_of_l2 / (W1.numel() + W2.numel())
+
+        # lhalf of L1s of tied weights
+        elif penalty_type == "tied_l1_with_lhalf":
+            combined = torch.cat([W1, W2.t()], dim=1)
+            l1 = torch.norm(combined, p=1, dim=1)
+            lhalf_of_l1 = torch.norm(l1, p=0.5, dim=0)
+            penalty = penalty + lhalf_of_l1 / (W1.numel() + W2.numel())
 
         # # L1 of L1s of tied weights — selecting only bottom 1/3
         # elif penalty_type == "tied_l1_with_l1":
@@ -184,10 +191,9 @@ def train(
     penalty_type,
     max_grad_norm=1.0,
 ):
-    if epoch % 2 == 0:
-        print(
-            f"\nStarting training with beta={beta}, penalty_type={penalty_type}, epoch={epoch}"
-        )
+    print(
+        f"\nStarting training with beta={beta}, penalty_type={penalty_type}, epoch={epoch}"
+    )
     model.train()
     total_loss = 0
     total_ce_loss = 0
@@ -205,7 +211,7 @@ def train(
         penalty = pruning_loss(model, penalty_type=penalty_type)
         detached_penalty = torch.tensor(penalty).detach()
         # beta=0.18 works well -- 0.23 for methods that take inverses
-        loss = loss_ce + beta * (penalty / detached_penalty)
+        loss = loss_ce + beta * (penalty)
 
         # Backward pass and optimization
         loss.backward()
@@ -234,41 +240,40 @@ def train(
         correct += pred.eq(target.view_as(pred)).sum().item()
         total_samples += data.size(0)
 
-    if epoch % 2 == 0 or epoch == 0:
-        # Calculate average weight norm across all layers for printing
-        param_count = 0
-        for layer in model.fc_layers + [model.output_layer]:
-            layer_norm = torch.norm(layer.weight, p=1)
-            total_norm += layer_norm
-            param_count += layer.weight.numel()
-        avg_weight_norm = total_norm / param_count
-        avg_loss = total_loss / total_samples
-        avg_ce_loss = total_ce_loss / total_samples
-        avg_pruning_loss = avg_loss - avg_ce_loss
-        accuracy = 100.0 * correct / total_samples
-        print(
-            f"Train Epoch: {epoch} [{total_samples}/{len(train_loader.dataset)} "
-            f"({100. * total_samples / len(train_loader.dataset):.0f}%)]\t"
-            f"Loss: {avg_loss:.6f}\tAccuracy: {accuracy:.2f}%"
-        )
-        print(f"Active neurons per layer: {active_neurons}")
-        print(f"Average weight norm: {avg_weight_norm:.6f}")
-        print(f"Total active neurons: {total_active}")
-        print(f"Average CE Loss: {avg_ce_loss.item():.6f}")
-        print(f"Average Pruning Loss: {avg_pruning_loss.item():.6f}")
-        print(f"Average Loss: {avg_loss.item():.6f}")
+    # Calculate average weight norm across all layers for printing
+    param_count = 0
+    for layer in model.fc_layers + [model.output_layer]:
+        layer_norm = torch.norm(layer.weight, p=1)
+        total_norm += layer_norm
+        param_count += layer.weight.numel()
+    avg_weight_norm = total_norm / param_count
+    avg_loss = total_loss / total_samples
+    avg_ce_loss = total_ce_loss / total_samples
+    avg_pruning_loss = avg_loss - avg_ce_loss
+    accuracy = 100.0 * correct / total_samples
+    print(
+        f"Train Epoch: {epoch} [{total_samples}/{len(train_loader.dataset)} "
+        f"({100. * total_samples / len(train_loader.dataset):.0f}%)]\t"
+        f"Loss: {avg_loss:.6f}\tAccuracy: {accuracy:.2f}%"
+    )
+    print(f"Active neurons per layer: {active_neurons}")
+    print(f"Average weight norm: {avg_weight_norm:.6f}")
+    print(f"Total active neurons: {total_active}")
+    print(f"Average CE Loss: {avg_ce_loss.item():.6f}")
+    print(f"Average Pruning Loss: {avg_pruning_loss.item():.6f}")
+    print(f"Average Loss: {avg_loss.item():.6f}")
 
-        # Log metrics to W&B
-        wandb.log(
-            {
-                "epoch": epoch,
-                "average_weight_norm": avg_weight_norm.item(),
-                "pruning_loss": avg_pruning_loss.item(),
-                "ce_loss": avg_ce_loss.item(),
-                "active_neurons": total_active,
-                "accuracy": accuracy,
-            }
-        )
+    # Log metrics to W&B
+    wandb.log(
+        {
+            "epoch": epoch,
+            "average_weight_norm": avg_weight_norm.item(),
+            "pruning_loss": avg_pruning_loss.item(),
+            "ce_loss": avg_ce_loss.item(),
+            "active_neurons": total_active,
+            "accuracy": accuracy,
+        }
+    )
 
     return beta, total_samples
 
@@ -351,7 +356,7 @@ def filter_even_digits(dataset):
     return torch.utils.data.Subset(dataset, even_indices)
 
 
-# ===========================
+# ===========================åå
 # Main Execution Loop
 # ===========================
 
@@ -362,10 +367,14 @@ def main():
     pruning_penalty = "tied_l2_with_lhalf"
     hidden_dim = 1200
     batch_size = 64
-    num_epochs = 60
+    num_epochs = 8
     pruning_threshold = 0.3  # up from 0.2
-    # Beta values for pruning loss -- 0.2 is good. I like more like 0.5 for tied_l2_with_lhalf
-    beta_values = [0.5]
+    # Beta values for pruning loss -- 0.2 is good
+    # For tied_l2_with_lhalf: approximately 0.5 / average_pruning_loss = 64
+    # For tied_l2: approximately 3 / average_pruning_loss = 3000
+    # For tied_l1: approximately 500
+    # For tied_l1_with_lhalf: approximately 25
+    beta_values = [64]
     learning_rates = [2e-1]
     save_model_weights = False
     model_save_dir = "models"
@@ -453,29 +462,28 @@ def main():
                     penalty_type=pruning_penalty,
                 )
                 total_datapoints += total_samples
-                # Save progress every 2 epochs
-                if epoch % 2 == 0 or epoch == 0:
-                    accuracy = test(model, device, test_loader)
-                    active_neurons = print_network_statistics(model)
-                    model_accuracies.append(
-                        {
-                            "Active Neurons": active_neurons,
-                            "Beta": beta,
-                            "Accuracy": accuracy,
-                            "Epoch": epoch,
-                            "Total Datapoints": total_datapoints,
-                        }
-                    )
-                    # Log metrics to W&B
-                    wandb.log(
-                        {
-                            "epoch": epoch,
-                            "accuracy": accuracy,
-                            "active_neurons": active_neurons,
-                            "beta": beta,
-                            "total_datapoints": total_datapoints,
-                        }
-                    )
+                # Save progress every epoch
+                accuracy = test(model, device, test_loader)
+                active_neurons = print_network_statistics(model)
+                model_accuracies.append(
+                    {
+                        "Active Neurons": active_neurons,
+                        "Beta": beta,
+                        "Accuracy": accuracy,
+                        "Epoch": epoch,
+                        "Total Datapoints": total_datapoints,
+                    }
+                )
+                # Log metrics to W&B
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "accuracy": accuracy,
+                        "active_neurons": active_neurons,
+                        "beta": beta,
+                        "total_datapoints": total_datapoints,
+                    }
+                )
 
             # Optional: save model weights at the end of training
             if save_model_weights:

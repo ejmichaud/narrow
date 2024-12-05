@@ -1,10 +1,28 @@
-import trl
-from trl import SFTTrainer
+# Copyright 2023 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from llama_pruning_loss import pruning_loss
+from pruning_trainer import PruningTrainer
+import torch.nn.functional as F
 import dataclasses
 import inspect
 import os
 import warnings
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Optional, Union, Dict, List, Tuple
 
 import datasets
 import torch
@@ -26,32 +44,55 @@ from transformers import (
     Trainer,
     is_wandb_available,
 )
-
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalPrediction
 from transformers.utils import is_liger_kernel_available, is_peft_available
 from transformers.utils.deprecation import deprecate_kwarg
 
 from trl.extras.dataset_formatting import get_formatting_func_from_dataset
-from trl.sft_config import SFTConfig
-from trl.utils import (
+from trl.trainer.sft_config import SFTConfig
+from trl.trainer.utils import (
     ConstantLengthDataset,
     DataCollatorForCompletionOnlyLM,
     generate_model_card,
     peft_module_casting_to_bf16,
 )
 
+
+if is_peft_available():
+    from peft import (
+        PeftConfig,
+        PeftModel,
+        get_peft_model,
+        prepare_model_for_kbit_training,
+    )
+
+if is_liger_kernel_available():
+    from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
+if is_wandb_available():
+    import wandb
+
 """Changes to the original SFTTrainer class are marked with an EDITS comment"""
 
 
-class PruningSFTTrainer(SFTTrainer):
+class SFTPruner(PruningTrainer):
+    _tag_names = ["trl", "sft"]
+
+    @deprecate_kwarg(
+        "tokenizer",
+        "0.16.0",
+        "processing_class",
+        warn_if_greater_or_equal_version=True,
+        raise_if_both_names=True,
+    )
     def __init__(
         self,
         model: Optional[Union[PreTrainedModel, nn.Module, str]] = None,
         args: Optional[SFTConfig] = None,
         data_collator: Optional[DataCollator] = None,  # type: ignore
         train_dataset: Optional[Dataset] = None,
-        eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
+        eval_dataset: Optional[Union[Dataset, dict[str, Dataset]]] = None,
         processing_class: Optional[
             Union[
                 PreTrainedTokenizerBase,
@@ -61,9 +102,9 @@ class PruningSFTTrainer(SFTTrainer):
             ]
         ] = None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
-        compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
-        callbacks: Optional[List[TrainerCallback]] = None,
-        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (
+        compute_metrics: Optional[Callable[[EvalPrediction], dict]] = None,
+        callbacks: Optional[list[TrainerCallback]] = None,
+        optimizers: tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (
             None,
             None,
         ),
@@ -72,11 +113,11 @@ class PruningSFTTrainer(SFTTrainer):
         ] = None,
         peft_config: Optional["PeftConfig"] = None,
         formatting_func: Optional[Callable] = None,
+        compute_loss_func: Optional[Callable] = None,
     ):
+        self.compute_loss_func = compute_loss_func
         if args is None:
-            output_dir = "tmp_trainer"
-            warnings.warn(f"No `SFTConfig` passed, using `output_dir={output_dir}`.")
-            args = SFTConfig(output_dir=output_dir)
+            args = SFTConfig(output_dir="tmp_trainer")
         elif args is not None and args.__class__.__name__ == "TrainingArguments":
             args_as_dict = args.to_dict()
             # Manually copy token values as TrainingArguments.to_dict() redacts them
@@ -109,10 +150,6 @@ class PruningSFTTrainer(SFTTrainer):
                 model_init_kwargs["torch_dtype"] = torch_dtype
 
         if isinstance(model, str):
-            warnings.warn(
-                "You passed a model_id to the SFTTrainer. This will automatically create an "
-                "`AutoModelForCausalLM` or a `PeftModel` (if you passed a `peft_config`) for you."
-            )
             if args.use_liger:
                 model = AutoLigerKernelForCausalLM.from_pretrained(
                     model, **model_init_kwargs
@@ -218,10 +255,6 @@ class PruningSFTTrainer(SFTTrainer):
             # to overcome some issues with broken tokenizers
             args.max_seq_length = min(processing_class.model_max_length, 1024)
 
-            warnings.warn(
-                f"You didn't pass a `max_seq_length` argument to the SFTTrainer, this will default to {args.max_seq_length}"
-            )
-
         self.dataset_num_proc = args.dataset_num_proc
         self.dataset_batch_size = args.dataset_batch_size
 
@@ -294,9 +327,20 @@ class PruningSFTTrainer(SFTTrainer):
             and processing_class.padding_side != "right"
         ):
             warnings.warn(
-                "You passed a processing_class with `padding_side` not equal to `right` to the SFTTrainer. This might lead to some unexpected behaviour due to "
-                "overflow issues when training a model in half-precision. You might consider adding `processing_class.padding_side = 'right'` to your code."
+                "You passed a processing_class with `padding_side` not equal to `right` to the SFTTrainer. This might "
+                "lead to some unexpected behaviour due to overflow issues when training a model in half-precision. "
+                "You might consider adding `processing_class.padding_side = 'right'` to your code.",
+                UserWarning,
             )
+
+        def custom_loss(outputs, labels, num_items_in_batch):
+            logits = outputs.logits.permute(0, 2, 1)
+            ce_loss = F.cross_entropy(logits, labels)
+            penalty = pruning_loss(model, penalty_type="tied_l2_with_lhalf")
+            print(f"penalty: {penalty}")
+            print(f"ce_loss: {ce_loss}")
+            total_loss = ce_loss + 0.5 * penalty
+            return total_loss
 
         super().__init__(
             model=model,
@@ -306,6 +350,8 @@ class PruningSFTTrainer(SFTTrainer):
             eval_dataset=eval_dataset,
             processing_class=processing_class,
             model_init=model_init,
+            # EDIT
+            compute_loss_func=custom_loss,
             compute_metrics=compute_metrics,
             callbacks=callbacks,
             optimizers=optimizers,
@@ -318,9 +364,251 @@ class PruningSFTTrainer(SFTTrainer):
 
         if self.train_dataset is not None:
             if self.args.max_steps > 0 and args.packing:
-                warnings.warn(
-                    "You passed `packing=True` to the SFTTrainer/SFTConfig, and you are training your model with `max_steps` strategy. The dataset will be iterated until the `max_steps` are reached."
-                )
                 self.train_dataset.infinite = True
             elif self.args.max_steps == -1 and args.packing:
                 self.train_dataset.infinite = False
+
+    def _prepare_dataset(
+        self,
+        dataset,
+        processing_class,
+        packing,
+        dataset_text_field: str,
+        max_seq_length,
+        formatting_func: Optional[Callable],
+        num_of_sequences,
+        chars_per_token,
+        remove_unused_columns=True,
+        append_concat_token=True,
+        add_special_tokens=True,
+        skip_prepare_dataset=False,
+    ):
+        if dataset is None:
+            raise ValueError("The dataset should not be None")
+
+        if skip_prepare_dataset:
+            return dataset
+
+        # If the dataset is already preprocessed (tokenized), return as-is. Only works if dataset is
+        # a datasets.Dataset or datasets.IterableDataset -- not for torch Dataset
+        column_names = (
+            dataset.column_names
+            if isinstance(dataset, (datasets.Dataset, datasets.IterableDataset))
+            else None
+        )
+        if column_names and "input_ids" in column_names:
+            if formatting_func is not None:
+                warnings.warn(
+                    "You passed a dataset that is already processed (contains an `input_ids` field) together with a "
+                    "valid formatting function. Therefore `formatting_func` will be ignored. Either remove the "
+                    "`formatting_func` or pass a dataset that is not already processed.",
+                    UserWarning,
+                )
+
+            def formatting_func(x):
+                return x["input_ids"]
+
+            if not packing:
+                return dataset
+
+        # check if torch dataset / dataloader and do nothing
+        # see https://github.com/huggingface/trl/pull/1468 for why datasets.IterableDataset needs a separate check
+        if isinstance(
+            dataset,
+            (
+                torch.utils.data.IterableDataset,
+                torch.utils.data.Dataset,
+                ConstantLengthDataset,
+            ),
+        ) and not isinstance(dataset, datasets.IterableDataset):
+            return dataset
+
+        if not packing:
+            return self._prepare_non_packed_dataloader(
+                processing_class,
+                dataset,
+                dataset_text_field,
+                max_seq_length,
+                formatting_func,
+                add_special_tokens,
+                remove_unused_columns,
+            )
+
+        else:
+            return self._prepare_packed_dataloader(
+                processing_class,
+                dataset,
+                dataset_text_field,
+                max_seq_length,
+                num_of_sequences,
+                chars_per_token,
+                formatting_func,
+                append_concat_token,
+                add_special_tokens,
+            )
+
+    def _prepare_non_packed_dataloader(
+        self,
+        processing_class,
+        dataset,
+        dataset_text_field: str,
+        max_seq_length,
+        formatting_func: Optional[Callable] = None,
+        add_special_tokens=True,
+        remove_unused_columns=True,
+    ):
+        # Inspired from: https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
+        def tokenize(element):
+            outputs = processing_class(
+                (
+                    element[dataset_text_field]
+                    if formatting_func is None
+                    else formatting_func(element)
+                ),
+                add_special_tokens=add_special_tokens,
+                truncation=True,
+                padding=False,
+                max_length=max_seq_length,
+                return_overflowing_tokens=False,
+                return_length=False,
+            )
+
+            if formatting_func is not None and not isinstance(
+                formatting_func(element), list
+            ):
+                raise ValueError(
+                    "The `formatting_func` should return a list of processed strings since it can lead to silent bugs."
+                )
+
+            return {
+                "input_ids": outputs["input_ids"],
+                "attention_mask": outputs["attention_mask"],
+            }
+
+        signature_columns = ["input_ids", "labels", "attention_mask"]
+
+        if dataset.column_names is not None:  # None for IterableDataset
+            extra_columns = list(set(dataset.column_names) - set(signature_columns))
+        else:
+            extra_columns = []
+
+        if not remove_unused_columns and len(extra_columns) > 0:
+            warnings.warn(
+                "You passed `remove_unused_columns=False` on a non-packed dataset. This might create some issues with "
+                "the default collator and yield to errors. If you want to inspect dataset other columns (in this "
+                f"case {extra_columns}), you can subclass `DataCollatorForLanguageModeling` in case you used the "
+                "default collator and create your own data collator in order to inspect the unused dataset columns.",
+                UserWarning,
+            )
+
+        map_kwargs = {
+            "batched": True,
+            "remove_columns": dataset.column_names if remove_unused_columns else None,
+            "batch_size": self.dataset_batch_size,
+        }
+        if isinstance(dataset, datasets.Dataset):
+            map_kwargs["num_proc"] = (
+                self.dataset_num_proc
+            )  # this arg is not available for IterableDataset
+        tokenized_dataset = dataset.map(tokenize, **map_kwargs)
+
+        return tokenized_dataset
+
+    def _prepare_packed_dataloader(
+        self,
+        processing_class,
+        dataset,
+        dataset_text_field: str,
+        max_seq_length,
+        num_of_sequences,
+        chars_per_token,
+        formatting_func: Optional[Callable] = None,
+        append_concat_token=True,
+        add_special_tokens=True,
+    ):
+        if processing_class is None:
+            raise ValueError("You need to pass a processing_class with `SFTTrainer`.")
+
+        constant_length_iterator = ConstantLengthDataset(
+            processing_class,
+            dataset,
+            dataset_text_field=(
+                None if formatting_func is not None else dataset_text_field
+            ),
+            formatting_func=formatting_func,
+            seq_length=max_seq_length,
+            infinite=False,
+            num_of_sequences=num_of_sequences,
+            chars_per_token=chars_per_token,
+            eos_token_id=processing_class.eos_token_id,
+            append_concat_token=append_concat_token,
+            add_special_tokens=add_special_tokens,
+        )
+
+        if isinstance(dataset, datasets.IterableDataset):
+            return constant_length_iterator
+
+        def data_generator(constant_length_iterator):
+            yield from constant_length_iterator
+
+        try:
+            packed_dataset = Dataset.from_generator(
+                data_generator,
+                gen_kwargs={"constant_length_iterator": constant_length_iterator},
+            )
+        except (DatasetGenerationError, SchemaInferenceError) as exc:
+            raise ValueError(
+                "Error occurred while packing the dataset. "
+                "Make sure that your dataset has enough samples to at least yield one packed sequence."
+            ) from exc
+        return packed_dataset
+
+    def create_model_card(
+        self,
+        model_name: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        tags: Union[str, list[str], None] = None,
+    ):
+        """
+        Creates a draft of a model card using the information available to the `Trainer`.
+
+        Args:
+            model_name (`str`, *optional*, defaults to `None`):
+                The name of the model.
+            dataset_name (`str`, *optional*, defaults to `None`):
+                The name of the dataset used for training.
+            tags (`str`, `list[str]` or `None`, *optional*, defaults to `None`):
+                Tags to be associated with the model card.
+        """
+        if not self.is_world_process_zero():
+            return
+
+        if hasattr(self.model.config, "_name_or_path") and not os.path.isdir(
+            self.model.config._name_or_path
+        ):
+            base_model = self.model.config._name_or_path
+        else:
+            base_model = None
+
+        tags = tags or []
+        if isinstance(tags, str):
+            tags = [tags]
+
+        if hasattr(self.model.config, "unsloth_version"):
+            tags.append("unsloth")
+
+        model_card = generate_model_card(
+            base_model=base_model,
+            model_name=model_name,
+            hub_model_id=self.hub_model_id,
+            dataset_name=dataset_name,
+            tags=tags,
+            wandb_url=(
+                wandb.run.get_url()
+                if is_wandb_available() and wandb.run is not None
+                else None
+            ),
+            trainer_name="SFT",
+        )
+
+        model_card.save(os.path.join(self.args.output_dir, "README.md"))
