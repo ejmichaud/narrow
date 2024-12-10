@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+# Trains models from scratch with varying hidden dimensions on half of MNIST
+
 
 # Define the model class
 class Net(nn.Module):
@@ -128,9 +130,9 @@ def main():
             }
         )
 
-    save_training_data(all_training_data, "data/training_accuracies.csv")
+    save_training_data(all_training_data, "data/training_accuracies_updated.csv")
     print(
-        f"Saved {len(all_training_data)} entries to {os.path.abspath('data/training_accuracies.csv')}"
+        f"Saved {len(all_training_data)} entries to {os.path.abspath('data/training_accuracies_updated.csv')}"
     )
 
 

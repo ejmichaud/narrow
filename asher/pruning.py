@@ -14,7 +14,7 @@ import wandb
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# TRY MASKING BY L2 INSTEAD OF L1 TOO — IT MIGHT WORK BETTER
+# TRY ABLATING BY IMPORTANCE
 
 
 # Model definition
