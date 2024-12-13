@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import os
 
+# Trains an original model from scratch to prune in pruning.py
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

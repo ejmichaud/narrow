@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import csv
 from datetime import datetime
+import os
+
+# Trains models of varying hidden dimensions with Hinton distillation
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -13,26 +16,69 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 batch_size = 64
 alpha = 0.1  # alpha is the weight for the cross-entropy loss, 1 - alpha is the weight for the distillation loss
-temperatures = [1, 5, 10]
+temperatures = [10]  # 1, 5, 10
 num_epochs = 5
 hidden_dim_teacher = 1200  # Hidden dimension for the teacher model
 
 # Hidden dimensions to test for students
-hidden_dims = [20, 80, 140, 200, 400, 800, 1000]
+hidden_dims = [
+    9,
+    11,
+    14,
+    22,
+    45,
+    60,
+    82,
+    205,
+    805,
+    1200,
+]  # [10, 12, 22, 82, 205, 805, 1200]
 
 # Create transform for images into tensors
 transform = transforms.ToTensor()
 
-# set up MNIST train and test sets and dataloaders
-train_dataset = datasets.MNIST(
+# Set up MNIST train and test sets for the teacher model
+teacher_train_dataset = datasets.MNIST(
     root="./data", train=True, download=True, transform=transform
 )
-test_dataset = datasets.MNIST(
+teacher_test_dataset = datasets.MNIST(
     root="./data", train=False, download=True, transform=transform
 )
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+def filter_even_digits(dataset):
+    """
+    Filters the dataset to only include samples with even digit labels.
+
+    Args:
+        dataset: The dataset to filter.
+
+    Returns:
+        A filtered dataset containing only even digit samples.
+    """
+    indices = [i for i, (_, label) in enumerate(dataset) if label % 2 == 0]
+    return torch.utils.data.Subset(dataset, indices)
+
+
+# Set up MNIST train and test sets for the student model
+student_train_dataset = filter_even_digits(teacher_train_dataset)
+student_test_dataset = filter_even_digits(teacher_test_dataset)
+
+# Data loaders for teacher model
+teacher_train_loader = DataLoader(
+    teacher_train_dataset, batch_size=batch_size, shuffle=True
+)
+teacher_test_loader = DataLoader(
+    teacher_test_dataset, batch_size=batch_size, shuffle=False
+)
+
+# Data loaders for student model
+student_train_loader = DataLoader(
+    student_train_dataset, batch_size=batch_size, shuffle=True
+)
+student_test_loader = DataLoader(
+    student_test_dataset, batch_size=batch_size, shuffle=False
+)
 
 
 # Teacher model definition
@@ -114,6 +160,7 @@ def train_teacher(model, device, train_loader, optimizer, epoch):
             epoch, total_loss, accuracy
         )
     )
+    return accuracy
 
 
 # Testing function
@@ -173,6 +220,18 @@ def train_student(
             epoch, total_loss, accuracy
         )
     )
+    return accuracy
+
+
+# Save training data
+def save_training_data(data, filename):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, "w", newline="") as csvfile:
+        fieldnames = ["Epoch", "Neurons Remaining", "Accuracy", "Temperature"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in data:
+            writer.writerow(entry)
 
 
 # Main script
@@ -184,8 +243,10 @@ def main():
     optimizer_teacher = optim.SGD(teacher_model.parameters(), lr=0.01, momentum=0.9)
     print("Training Teacher Model...")
     for epoch in range(1, num_epochs + 1):
-        train_teacher(teacher_model, device, train_loader, optimizer_teacher, epoch)
-    teacher_acc = test(teacher_model, device, test_loader, model_name="Teacher")
+        train_teacher(
+            teacher_model, device, teacher_train_loader, optimizer_teacher, epoch
+        )
+    teacher_acc = test(teacher_model, device, teacher_test_loader, model_name="Teacher")
 
     for hidden_dim in hidden_dims:
         for T in temperatures:
@@ -197,34 +258,46 @@ def main():
                 student_model.parameters(), lr=0.01, momentum=0.9
             )
 
-            for epoch in range(1, num_epochs + 1):
+            epoch = 1
+            while True:  # Loop indefinitely
                 train_student(
                     student_model,
                     teacher_model,
                     device,
-                    train_loader,
+                    student_train_loader,
                     optimizer_student,
                     epoch,
                     T,
                     alpha,
                 )
 
-            student_acc = test(
-                student_model, device, test_loader, model_name=f"Student (T={T})"
-            )
+                student_acc = test(
+                    student_model,
+                    device,
+                    student_test_loader,
+                    model_name=f"Student (T={T})",
+                )
 
+                if student_acc >= 97.0:  # Stop if accuracy reaches 97%
+                    break
+
+                epoch += 1  # Increment epoch
+
+            # Append results after training finishes for the student model
             student_results.append(
-                {"hidden_dim": hidden_dim, "temperature": T, "accuracy": student_acc}
+                {
+                    "Epoch": epoch,
+                    "Neurons Remaining": 2 * hidden_dim,
+                    "Accuracy": student_acc,
+                    "Temperature": T,
+                }
             )
 
     # Save results to a CSV file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"model_accuracies_{timestamp}.csv"
-    with open(filename, "w", newline="") as csvfile:
-        fieldnames = ["hidden_dim", "temperature", "accuracy"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(student_results)
+    save_training_data(student_results, "data/student_training_accuracies.csv")
+    print(
+        f"Saved {len(student_results)} entries to {os.path.abspath('data/student_training_accuracies.csv')}"
+    )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,23 @@
-torch
+torch>=2.0.0
 torchvision
 matplotlib
 ipynb
 wandb
+datasets
+trl
+huggingface_hub
+python-dotenv
+transformers>=4.36.0
+peft
+accelerate
+safetensors
+numpy
+packaging
+# Optional dependencies
+# bitsandbytes
+# deepspeed
+# apex
+# Schedule-Free
+# galore-torch
+# grokadamw
+# lomo-pytorch
