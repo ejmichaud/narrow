@@ -50,7 +50,9 @@ class SparsityTrainer(Trainer):
         )
         reg_loss = self.sparsity_lambda * self.compute_sparsity_loss(model)
         total_loss = data_loss + reg_loss
-        self.log({"reg_loss": reg_loss.item()})
+        self.log({"reg_loss": reg_loss.item() / self.sparsity_lambda})
+        self.log({"reg_loss_weighted": reg_loss.item()})
+        self.log({"data_loss": data_loss.item()})
         return (total_loss, outputs) if return_outputs else total_loss
 
 
@@ -118,6 +120,7 @@ def prepare_dataset(dataset, tokenizer, max_length):
 
 def main():
     args = parse_args()
+    print("args: ", args)
 
     # Load or stream dataset
     if args.use_streaming:
