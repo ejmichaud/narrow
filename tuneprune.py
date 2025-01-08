@@ -152,10 +152,8 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.float32,  # or float16 if your GPU supports it
-        device_map="cuda:0"        # or "auto"
+        device_map="auto"           # could also specify device like "cuda:0"
     )
-    import code; code.interact(local=locals())
-    exit()
 
     # Data collator for causal LM
     data_collator = DataCollatorForLanguageModeling(
