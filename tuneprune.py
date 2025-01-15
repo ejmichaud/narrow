@@ -69,6 +69,47 @@ def l1_sparsity_loss_mlps(model: nn.Module) -> torch.Tensor:
     """
     return sum(p.abs().sum() for name, p in model.named_parameters() if p.requires_grad and 'mlp' in name)
 
+def l1_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
+    """
+    Computes the L1 norm of the L2 norm of the parameters specific to each MLP neuron.
+    """
+    L1 = 0.0
+    for layeri in range(len(model.model.layers)):
+        gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
+        up_proj = model.model.layers[layeri].mlp.up_proj            # (4x, x)
+        down_proj = model.model.layers[layeri].mlp.down_proj        # (x, 4x)
+        L2 = torch.sqrt(
+            gate_proj.pow(2).sum(dim=1) + \
+            up_proj.pow(2).sum(dim=1) + \
+            down_proj.pow(2).sum(dim=0)
+        )
+        L1 += L2.abs().sum()
+    return L1
+
+def lhalf_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
+    """
+    Computes the L1/2 norm of the L2 norm of the parameters specific to each MLP neuron.
+    """
+    Lhalf = 0.0
+    for layeri in range(len(model.model.layers)):
+        gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
+        up_proj = model.model.layers[layeri].mlp.up_proj            # (4x, x)
+        down_proj = model.model.layers[layeri].mlp.down_proj        # (x, 4x)
+        L2 = torch.sqrt(
+            gate_proj.pow(2).sum(dim=1) + \
+            up_proj.pow(2).sum(dim=1) + \
+            down_proj.pow(2).sum(dim=0)
+        )
+        Lhalf += L2.abs().pow(0.5).sum()
+    return Lhalf.pow(2)
+
+REGULARIZERS = {
+    "l1_sparsity_loss": l1_sparsity_loss,
+    "l1_sparsity_loss_mlps": l1_sparsity_loss_mlps,
+    "l1_of_l2_of_mlps": l1_of_l2_of_mlps,
+    "lhalf_of_l2_of_mlps": lhalf_of_l2_of_mlps,
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Prune-finetuning script")
@@ -78,6 +119,11 @@ def parse_args():
                         help="Directory to store model checkpoints and logs.")
     parser.add_argument("--sparsity_lambda", type=float, default=0.01,
                         help="Regularization strength for L1 penalty.")
+    parser.add_argument("--regularizer", type=str, default="l1_sparsity_loss_mlps",
+                        choices=REGULARIZERS.keys(),
+                        help="Regularization function to use.")
+    parser.add_argument("--lr", type=float, default=2e-5,
+                        help="Learning rate for Adam optimizer.")
     parser.add_argument("--max_steps", type=int, default=10000,
                         help="Total number of training steps to run.")
     parser.add_argument("--max_length", type=int, default=512,
@@ -180,8 +226,8 @@ def main():
         gradient_accumulation_steps=1,
         fp16=False,  # Set to True if you want mixed precision (and your GPU supports it)
         gradient_checkpointing=True,  # Potential memory savings
-        learning_rate=2e-5,
-        warmup_steps=500,
+        learning_rate=args.lr,
+        warmup_steps=1000,
     )
 
     trainer = SparsityTrainer(
@@ -191,8 +237,7 @@ def main():
         eval_dataset=tokenized_val,
         data_collator=data_collator,
         tokenizer=tokenizer,
-        # compute_sparsity_loss=l1_sparsity_loss,
-        compute_sparsity_loss=l1_sparsity_loss_mlps,
+        compute_sparsity_loss=REGULARIZERS[args.regularizer],
         sparsity_lambda=args.sparsity_lambda,
     )
 
