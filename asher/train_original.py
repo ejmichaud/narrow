@@ -6,8 +6,6 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import os
 
-# Trains an original model from scratch to prune in pruning.py
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -80,9 +78,9 @@ def main():
     # Hyperparameters
     batch_size = 64
     learning_rate = 0.01
-    num_epochs = 5
+    num_epochs = 7
     print_interval = 100
-    hidden_dims = [20, 10]
+    hidden_dims = [1200, 1200]
 
     # Data loading & preprocessing
     transform = transforms.ToTensor()
@@ -114,8 +112,8 @@ def main():
 
     # Save model
     os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), f"models/size_{hidden_dims[0]}.pth")
-    print(f"Saved original model to models/size_{hidden_dims[0]}.pth")
+    torch.save(model.state_dict(), f"models/original_model.pth")
+    print(f"Saved original model to models/original_model.pth")
 
 
 if __name__ == "__main__":

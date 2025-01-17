@@ -8,13 +8,119 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import csv
 import os
-import math
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import wandb
+import matplotlib.pyplot as plt
+import numpy as np
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # TRY ABLATING BY IMPORTANCE
+
+
+def visualize_mlp(model, weight_threshold=0.3, color_range=[-1, 1]):
+    # Check if the model is an instance of Net
+    assert isinstance(model, Net), "Model must be an instance of Net"
+    layers = model.fc_layers + [model.output_layer]
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    max_width = max(max(layer.in_features, layer.out_features) for layer in layers)
+    ax.set_xlim(-max_width * 0.05, max_width * 1.05)
+    ax.set_ylim(-0.2, len(layers) + 0.2)
+
+    positions = list()
+    for i, layer in enumerate(layers):
+        pos = np.linspace(0, max_width - 1, layer.in_features)
+        positions.append(pos)
+    positions.append(np.linspace(0, max_width - 1, layer.out_features))
+
+    # Plot neurons in input layer
+    ax.scatter(
+        positions[0],  # Use all position indices for input layer
+        [0] * len(positions[0]),  # Same number of zeros as input neurons
+        s=10,
+        c="black",
+        zorder=10,
+    )
+    # Plot hidden layers (only active neurons) edit
+    for i, layer in enumerate(layers[1:]):
+        mask = model.masks[i].cpu().numpy()
+        active_positions = positions[i + 1][mask > 0]
+        ax.scatter(
+            active_positions,
+            [i + 1] * len(active_positions),
+            s=10,
+            c="black",
+            zorder=10,
+        )
+
+    # plot neurons in output layer
+    ax.scatter(
+        positions[-1],
+        [len(layers)] * 10,
+        s=10,
+        c="black",
+        zorder=10,
+    )
+    # plot the connections for the first layer
+    layer = layers[0]
+    weights = (
+        layer.weight.detach().cpu().numpy()
+    )  # out_features by in_features, ie 1200 by 784
+    mask = model.masks[0].unsqueeze(1).cpu().numpy()  # out_features by 1
+    weights = weights * mask
+    for j in range(layer.in_features):  # for j in in_features
+        for k in range(weights.shape[0]):  # for k in out_features
+            color = plt.cm.bwr(
+                (weights[k, j] - color_range[0]) / (color_range[1] - color_range[0])
+            )
+            ax.plot(
+                [positions[0][j], positions[1][k]],
+                [0, 1],
+                c=color,
+                linewidth=abs(weights[k, j]) * 2,
+                alpha=0.7,
+            )
+    # plot the connections for next layer — for first, want to double mask, with masks[0].unsqueeze(1) to get mask outfeatures leaving these neurons, and also masks[1].unsqueeze(0) to mask weights into next layer
+    layer = layers[1]
+    weights = (
+        layer.weight.detach().cpu().numpy()
+    )  # out_features by in_features ie 1200 by 1200
+    mask1 = model.masks[1].unsqueeze(1).cpu().numpy()  # out_features by 1
+    mask2 = model.masks[0].unsqueeze(0).cpu().numpy()  # 1 by in_features
+    # Apply mask
+    weights = weights * mask1 * mask2
+    for j in range(layer.in_features):  # for j in in_features
+        for k in range(weights.shape[0]):  # for k in out_features
+            color = plt.cm.bwr(
+                (weights[k, j] - color_range[0]) / (color_range[1] - color_range[0])
+            )
+            ax.plot(
+                [positions[1][j], positions[2][k]],
+                [1, 2],
+                c=color,
+                linewidth=abs(weights[k, j]) * 2,
+                alpha=0.7,
+            )
+    # for last layer, just want to mask the in_features, so masks[1].unsqueeze(0) gives 1 by in_features which multiplies right
+    layer = layers[-1]
+    weights = layer.weight.detach().cpu().numpy()
+    mask = model.masks[1].unsqueeze(0).cpu().numpy()
+    weights = weights * mask
+    for j in range(layer.in_features):
+        for k in range(weights.shape[0]):
+            color = plt.cm.bwr(
+                (weights[k, j] - color_range[0]) / (color_range[1] - color_range[0])
+            )
+            ax.plot(
+                [positions[-2][j], positions[-1][k]],
+                [len(layers) - 1, len(layers)],
+                c=color,
+                linewidth=abs(weights[k, j]) * 2,
+                alpha=0.7,
+            )
+    ax.axis("off")
 
 
 # Model definition
@@ -202,6 +308,17 @@ def train(
     total_norm = 0
 
     for batch_idx, (data, target) in enumerate(train_loader, 1):
+        # PLOTTING
+        if batch_idx % 100 == 1:
+            visualize_mlp(
+                model=model, weight_threshold=0.0, color_range=[-0.3, 0.3]
+            )  # HERE
+            plt.title(f"Step {len(os.listdir('data/weight_vis'))}")
+            plt.savefig(
+                f"data/weight_vis/pruning_step_{len(os.listdir('data/weight_vis')):04d}.png"
+            )
+            plt.close()
+
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
@@ -264,16 +381,16 @@ def train(
     print(f"Average Loss: {avg_loss.item():.6f}")
 
     # Log metrics to W&B
-    wandb.log(
-        {
-            "epoch": epoch,
-            "average_weight_norm": avg_weight_norm.item(),
-            "pruning_loss": avg_pruning_loss.item(),
-            "ce_loss": avg_ce_loss.item(),
-            "active_neurons": total_active,
-            "accuracy": accuracy,
-        }
-    )
+    # wandb.log(
+    #     {
+    #         "epoch": epoch,
+    #         "average_weight_norm": avg_weight_norm.item(),
+    #         "pruning_loss": avg_pruning_loss.item(),
+    #         "ce_loss": avg_ce_loss.item(),
+    #         "active_neurons": total_active,
+    #         "accuracy": accuracy,
+    #     }
+    # )
 
     return beta, total_samples
 
@@ -356,7 +473,7 @@ def filter_even_digits(dataset):
     return torch.utils.data.Subset(dataset, even_indices)
 
 
-# ===========================åå
+# ===========================
 # Main Execution Loop
 # ===========================
 
@@ -367,7 +484,7 @@ def main():
     pruning_penalty = "tied_l2_with_lhalf"
     hidden_dim = 1200
     batch_size = 64
-    num_epochs = 8
+    num_epochs = 4
     pruning_threshold = 0.3  # up from 0.2
     # Beta values for pruning loss -- 0.2 is good
     # For tied_l2_with_lhalf: approximately 0.5 / average_pruning_loss = 64
@@ -380,18 +497,18 @@ def main():
     model_save_dir = "models"
 
     # Initialize W&B
-    wandb.init(
-        project="pruning-experiment",
-        config={
-            "pruning_penalty": pruning_penalty,
-            "hidden_dim": hidden_dim,
-            "batch_size": batch_size,
-            "num_epochs": num_epochs,
-            "pruning_threshold": pruning_threshold,
-            "beta_values": beta_values,
-            "learning_rates": learning_rates,
-        },
-    )
+    # wandb.init(
+    #     project="pruning-experiment",
+    #     config={
+    #         "pruning_penalty": pruning_penalty,
+    #         "hidden_dim": hidden_dim,
+    #         "batch_size": batch_size,
+    #         "num_epochs": num_epochs,
+    #         "pruning_threshold": pruning_threshold,
+    #         "beta_values": beta_values,
+    #         "learning_rates": learning_rates,
+    #     },
+    # )
 
     # Load the original model
     original_model_path = "models/original_model.pth"
@@ -421,9 +538,9 @@ def main():
 
     for lr in learning_rates:
         for beta in beta_values:
-            wandb.config.update(
-                {"learning_rate": lr, "beta": beta}, allow_val_change=True
-            )
+            # wandb.config.update(
+            #     {"learning_rate": lr, "beta": beta}, allow_val_change=True
+            # )
             print(f"Pruning with Beta = {beta} and {pruning_penalty} Penalty")
             # Initialize prunable model and load original weights
             model = Net(
@@ -475,15 +592,15 @@ def main():
                     }
                 )
                 # Log metrics to W&B
-                wandb.log(
-                    {
-                        "epoch": epoch,
-                        "accuracy": accuracy,
-                        "active_neurons": active_neurons,
-                        "beta": beta,
-                        "total_datapoints": total_datapoints,
-                    }
-                )
+                # wandb.log(
+                #     {
+                #         "epoch": epoch,
+                #         "accuracy": accuracy,
+                #         "active_neurons": active_neurons,
+                #         "beta": beta,
+                #         "total_datapoints": total_datapoints,
+                #     }
+                # )
 
             # Optional: save model weights at the end of training
             if save_model_weights:
@@ -495,7 +612,7 @@ def main():
 
     # Save accuracy data to CSV
     save_accuracy_data(model_accuracies, pruning_penalty)
-    wandb.finish()
+    # wandb.finish()
 
 
 if __name__ == "__main__":
