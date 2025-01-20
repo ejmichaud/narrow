@@ -14,6 +14,7 @@ import os
 # Set up Hugging Face token and environment
 os.environ["TRANSFORMERS_CACHE"] = "../.cache/huggingface"
 os.environ["HF_HOME"] = "../.cache/huggingface"
+os.environ["HF_DATASETS_CACHE"] = "../.cache/huggingface"
 
 import argparse
 import torch
