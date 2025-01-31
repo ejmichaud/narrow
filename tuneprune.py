@@ -76,8 +76,8 @@ def l1_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
     L1 = 0.0
     for layeri in range(len(model.model.layers)):
         gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
-        up_proj = model.model.layers[layeri].mlp.up_proj            # (4x, x)
-        down_proj = model.model.layers[layeri].mlp.down_proj        # (x, 4x)
+        up_proj = model.model.layers[layeri].mlp.up_proj.weight     # (4x, x)
+        down_proj = model.model.layers[layeri].mlp.down_proj.weight # (x, 4x)
         L2 = torch.sqrt(
             gate_proj.pow(2).sum(dim=1) + \
             up_proj.pow(2).sum(dim=1) + \
@@ -93,8 +93,8 @@ def lhalf_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
     Lhalf = 0.0
     for layeri in range(len(model.model.layers)):
         gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
-        up_proj = model.model.layers[layeri].mlp.up_proj            # (4x, x)
-        down_proj = model.model.layers[layeri].mlp.down_proj        # (x, 4x)
+        up_proj = model.model.layers[layeri].mlp.up_proj.weight     # (4x, x)
+        down_proj = model.model.layers[layeri].mlp.down_proj.weight # (x, 4x)
         L2 = torch.sqrt(
             gate_proj.pow(2).sum(dim=1) + \
             up_proj.pow(2).sum(dim=1) + \
