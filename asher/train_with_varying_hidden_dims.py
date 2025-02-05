@@ -8,8 +8,6 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# Trains models from scratch with varying hidden dimensions on half of MNIST
-
 
 # Define the model class
 class Net(nn.Module):

@@ -8,8 +8,6 @@ import csv
 from datetime import datetime
 import os
 
-# Trains models of varying hidden dimensions with Hinton distillation
-
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
