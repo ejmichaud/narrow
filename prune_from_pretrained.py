@@ -8,6 +8,10 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset
 from transformers import DataCollatorForLanguageModeling
 import os
+import numpy as np
+import json
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 def prune_by_attribution(
@@ -162,6 +166,34 @@ def prune_by_attribution(
 
     # Start the pruning process
     compute_neuron_importances()
+
+    # Compute, print, and save statistics about average attribution
+    attribution_statistics = {}
+    for cache_name, effects in neuron_to_avg_effect.items():
+        values = list(effects.values())
+        if len(values) > 0:
+            arr = np.array(values)
+            mean_attr = float(np.mean(arr))
+            percentile_10 = float(np.percentile(arr, 10))
+            percentile_20 = float(np.percentile(arr, 20))
+            percentile_30 = float(np.percentile(arr, 30))
+            attribution_statistics[cache_name] = {
+                "mean_attribution": mean_attr,
+                "10th_percentile": percentile_10,
+                "20th_percentile": percentile_20,
+                "30th_percentile": percentile_30,
+            }
+            print(
+                f"Stats for {cache_name}: Mean Attribution: {mean_attr:.6f}, "
+                f"10th Percentile: {percentile_10:.6f}, 20th Percentile: {percentile_20:.6f}, 30th Percentile: {percentile_30:.6f}"
+            )
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        stats_file = os.path.join(output_dir, "attribution_stats.json")
+        with open(stats_file, "w") as f:
+            json.dump(attribution_statistics, f, indent=4)
+        print(f"Saved attribution statistics to {stats_file}")
+
     prune_neurons()
 
     if save_pruned_model:
@@ -258,12 +290,15 @@ def prepare_data_for_pruning(
 def main():
     # Choose a model
     model_name = "NousResearch/Llama-3.2-1B"
+    # model_name = (
+    #     "/om2/user/ericjm/narrow/experiments/tuneprune5/lambda_0.0005/checkpoint-30000"
+    # )
     # Choose a pruning strategy — "attribution" or "weight_norm"
     pruning_strategy = "attribution"
     # Choose whether to save the pruned model to a specified output directory
-    save_pruned_model = True
+    save_pruned_model = False
     output_dir = "./pruned_models/llama_1B_checkpoint_1"
-
+    attribution_batch_size = 32
     model = AutoModelForCausalLM.from_pretrained(model_name)
 
     if pruning_strategy == "attribution":
@@ -271,14 +306,14 @@ def main():
             dataset_name="codeparrot/github-code",
             model_name=model_name,
             max_length=512,
-            batch_size=8,
+            batch_size=attribution_batch_size,
         )
         prune_by_attribution(
             model=model,
             train_dataloader=attribution_dataloader,
             importance_threshold=1e-7,
-            attribution_batch_size=2,
-            num_attribution_batches=1,
+            attribution_batch_size=attribution_batch_size,
+            num_attribution_batches=10,
             save_pruned_model=save_pruned_model,
             output_dir=output_dir,
         )

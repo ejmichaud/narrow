@@ -172,6 +172,25 @@ class PruneByAttributionCallback(TrainerCallback):
             self.neuron_to_avg_effect = {}
             print("Computing neuron importances...")
             self.compute_neuron_importances()
+
+            # Compute and print attribution statistics across neurons
+            import numpy as np
+
+            print("Attribution statistics across neurons:")
+            for cache_name, effects in self.neuron_to_avg_effect.items():
+                values = list(effects.values())
+                if values:
+                    arr = np.array(values)
+                    mean_attr = np.mean(arr)
+                    percentile_10 = np.percentile(arr, 10)
+                    percentile_20 = np.percentile(arr, 20)
+                    percentile_30 = np.percentile(arr, 30)
+                    print(
+                        f"Stats for {cache_name}: Mean Attribution: {mean_attr:.6f}, "
+                        f"10th Percentile: {percentile_10:.6f}, 20th Percentile: {percentile_20:.6f}, "
+                        f"30th Percentile: {percentile_30:.6f}"
+                    )
+
             print("Pruning neurons...")
             self.prune_neurons(self.model)
             print("Pruning complete\n")
@@ -571,9 +590,9 @@ def main():
             PruneByAttributionCallback(
                 model=model,
                 train_dataloader=attribution_dataloader,
-                prune_every_k_steps=5,
+                prune_every_k_steps=10000,
                 importance_threshold=1e-7,
-                attribution_batch_size=1,
+                attribution_batch_size=args.batch_size,
             )
         ],
         # callbacks=[
