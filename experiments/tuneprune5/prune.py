@@ -289,8 +289,6 @@ def parse_args() -> argparse.Namespace:
                         help="Load the dataset in streaming mode.")
 
     # Attribution strategy parameters
-    parser.add_argument("--attribution_batch_size", type=int, default=4,
-                        help="Batch size used for attribution pruning (not used separately if using same dataloader).")
     parser.add_argument("--importance_threshold", type=float, default=1e-7,
                         help="Threshold for neuron importance (attribution pruning).")
 
@@ -333,21 +331,22 @@ def main() -> None:
         device_map=str(device)
     )
 
-    # Load pruning data.
-    print("Preparing pruning data...")
-    pruning_dataloader = prepare_data(
-        dataset_name=args.dataset_name,
-        model_name=args.model_name,
-        max_length=args.max_length,
-        batch_size=args.batch_size,
-        num_samples=args.num_samples,
-        split="train",
-        streaming=args.streaming,
-        skip_samples=0,  # For attribution, start at the beginning.
-    )
-
     # Apply pruning strategy and capture pruning statistics.
     if args.pruning_strategy == "attribution":
+
+        # Load pruning data.
+        print("Preparing pruning data...")
+        pruning_dataloader = prepare_data(
+            dataset_name=args.dataset_name,
+            model_name=args.model_name,
+            max_length=args.max_length,
+            batch_size=args.batch_size,
+            num_samples=args.num_samples,
+            split="train",
+            streaming=args.streaming,
+            skip_samples=0,  # For attribution, start at the beginning.
+        )
+
         pruning_stats = prune_by_attribution(
             model=model,
             train_dataloader=pruning_dataloader,
@@ -400,19 +399,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-"""
-python prune-python.py \
-    --model_name "NousResearch/Llama-3.2-1B" \
-    --pruning_strategy attribution \
-    --max_length 256 \
-    --batch_size 4 \
-    --num_samples 1024 \
-    --streaming \
-    --importance_threshold 0.0000001 \
-    --output_dir test0 \
-    --num_test_samples 1024 \
-    --eval_skip 1024
-"""
