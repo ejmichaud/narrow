@@ -8,9 +8,11 @@ to disk.
 import argparse
 import json
 import os
+os.environ['HF_HOME'] = '/om/user/ericjm/.cache/huggingface'
 from collections.abc import Mapping
-from typing import Any, Dict, Union
+from typing import Any, Dict, Tuple, Union
 
+from tqdm.auto import tqdm
 import numpy as np
 import einops
 import torch
@@ -41,10 +43,14 @@ def prepare_data(
     batch_size: int,
     num_samples: int,
     split: str = "train",
-    streaming: bool = False,
+    streaming: bool = True,
+    skip_samples: int = 0,
 ) -> DataLoader:
     """
     Load and tokenize a dataset for pruning or evaluation.
+
+    If the dataset is streamed, you can optionally skip a number of documents,
+    allowing you to use one part of the stream for attribution and a different part for evaluation.
     
     Args:
         dataset_name: Name of the dataset to load.
@@ -54,18 +60,22 @@ def prepare_data(
         num_samples: Number of samples to use from the dataset.
         split: Which split of the dataset to use (e.g. "train", "test").
         streaming: Whether to load the dataset in streaming mode.
+        skip_samples: Number of samples to skip from the beginning of the stream.
     
     Returns:
         A DataLoader yielding batches suitable for language modeling.
     """
     if streaming:
-        dataset = load_dataset(dataset_name, split=split, streaming=True)
+        dataset = load_dataset(dataset_name, split=split, languages=['Python'], streaming=True)
+        if skip_samples > 0:
+            dataset = dataset.skip(skip_samples)
         dataset = dataset.take(num_samples)
         # Convert streaming dataset to a list to allow tokenization.
         dataset = list(dataset)
     else:
-        dataset = load_dataset(dataset_name, split=split)
-        dataset = dataset.select(range(min(num_samples, len(dataset))))
+        dataset = load_dataset(dataset_name, split=split, languages=['Python'])
+        # For non-streaming, we assume random access is available.
+        dataset = dataset.select(range(skip_samples, skip_samples + num_samples))
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token_id is None:
@@ -79,10 +89,10 @@ def prepare_data(
             max_length=max_length,
         )
 
-    tokenized_dataset = dataset if isinstance(dataset, list) else dataset.map(
-        tokenize_function,
-        batched=True,
-        remove_columns=dataset.column_names,
+    tokenized_dataset = (
+        dataset
+        if isinstance(dataset, list)
+        else dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
     )
     # If tokenized_dataset is a list (from streaming), tokenize each sample.
     if isinstance(tokenized_dataset, list):
@@ -93,6 +103,7 @@ def prepare_data(
     return dataloader
 
 
+@torch.no_grad()
 def evaluate_model(model: nn.Module, dataloader: DataLoader, device: torch.device) -> Dict[str, float]:
     """
     Evaluate the model on the provided data and compute average loss.
@@ -107,25 +118,13 @@ def evaluate_model(model: nn.Module, dataloader: DataLoader, device: torch.devic
     """
     model.eval()
     losses = []
-    total_loss = 0.0
-    total_tokens = 0
-    with torch.no_grad():
-        for batch in dataloader:
-            batch = move_to_device(batch, device)
-            outputs = model(**batch)
-            losses.append(outputs.loss.item())
-            # Multiply loss by number of tokens in the batch.
-            # batch_size = batch["input_ids"].size(0)
-            # seq_length = batch["input_ids"].size(1)
-            # total_loss += outputs.loss.item() * batch_size * seq_length
-            # total_tokens += batch_size * seq_length
-
-    # avg_loss = total_loss / total_tokens if total_tokens > 0 else float("nan")
-    # return {"average_loss": avg_loss}
-    # return mean loss, std of mean, and list of losses
+    for batch in tqdm(dataloader, desc="evaluating..."):
+        batch = move_to_device(batch, device)
+        outputs = model(**batch)
+        losses.append(outputs.loss.item())
     return {
         "mean_loss": np.mean(losses).item(),
-        "std_of_mean": np.std(losses).item() / np.sqrt(len(losses)).item(),
+        "std_of_mean": (np.std(losses) / np.sqrt(len(losses))).item(),
         "losses": losses,
     }
 
@@ -136,147 +135,83 @@ def prune_by_attribution(
     importance_threshold: float,
     num_attribution_batches: int,
     save_pruned_model: bool,
-    output_dir: str,
-) -> None:
-    """
-    Prune neurons based on their contribution (attribution) to the loss.
-    
-    For each of a fixed number of batches from the dataloader, the forward and
-    backward activations for each neuron are cached. Their average effect is
-    computed and neurons whose effect is below a threshold are pruned.
-    """
-    device = next(model.parameters()).device
-    neuron_to_avg_effect: Dict[str, Dict[int, float]] = {}
+    output_dir: str, 
+):
+    """Prune neurons based on their attribution scores."""
 
-    def _prepare_inputs(inputs: Dict[str, Union[torch.Tensor, Any]]) -> Dict[str, Union[torch.Tensor, Any]]:
-        return {k: move_to_device(v, device) for k, v in inputs.items()}
+    def get_attribution_hook(cache, name, hook_cache):
+        def attribution_hook(module, input, output):
+            def backward_hook(grad):
+                modified_grad = -output.detach() * grad
+                cache[name] = modified_grad
+                return grad
+            hook_cache[name] = output.register_hook(backward_hook)
+            return None 
+        return attribution_hook
 
-    def get_cache_fwd_and_bwd(model: nn.Module, tokens: Dict[str, torch.Tensor]):
+    scores = {layeri: 0 for layeri in range(len(model.model.layers))}
+    total_activations = {layeri: 0 for layeri in range(len(model.model.layers))}
+    for i, batch in enumerate(tqdm(train_dataloader, desc="attribution scores...")):
+        if i >= num_attribution_batches:
+            break
+        
         cache = {}
-        grad_cache = {}
+        forward_hooks = {}
+        backward_handles = {}
+        for layeri in range(len(model.model.layers)):
+            forward_hooks[layeri] = model.model.layers[layeri].mlp.act_fn.register_forward_hook(
+                get_attribution_hook(cache, layeri, backward_handles)
+            )
 
-        def forward_hook(module, input, output):
-            cache[id(module)] = output.detach()
-            return output
-
-        def backward_hook(module, grad_input, grad_output):
-            # Store only the gradient for the first output.
-            grad_cache[id(module)] = grad_output[0].detach()
-            return grad_input
-
-        # Register hooks only for modules with "mlp" in their name.
-        hooks = []
-        for name, module in model.named_modules():
-            if "mlp" in name:
-                hooks.append(module.register_forward_hook(forward_hook))
-                hooks.append(module.register_full_backward_hook(backward_hook))
-
-        outputs = model(**tokens)
+        batch = move_to_device(batch, model.device)
+        outputs = model(**batch)
         loss = outputs.loss
         loss.backward()
 
-        # Remove hooks.
-        for hook in hooks:
-            hook.remove()
+        # remove hooks and sum attribution scores across batch and seq dim
+        for layeri in range(len(model.model.layers)):
+            attrs = cache[layeri]
+            scores[layeri] += attrs.sum(dim=tuple(range(attrs.ndim - 1))).detach()
+            total_activations[layeri] += attrs.shape[0] * attrs.shape[1]
+            forward_hooks[layeri].remove()
+            backward_handles[layeri].remove()
+        
+        del cache
+        del forward_hooks
+        del backward_handles
 
-        # Wrap caches in a simple object.
-        class SimpleCache:
-            def __init__(self, cache_dict):
-                self.cache_dict = cache_dict
+    # average scores
+    for layeri in scores:
+        scores[layeri] /= total_activations[layeri]
+    
+    # prune by score
+    total_neurons_pruned = 0
+    total_neurons = 0
+    neurons_pruned_per_layer = []
+    for layeri, layer in enumerate(model.model.layers):
+        mask = scores[layeri].abs() < importance_threshold
+        total_neurons += mask.shape[0]
+        total_neurons_pruned += mask.sum().item()
+        neurons_pruned_per_layer.append(mask.sum().item())
+        print(f"Layer {layeri}: pruned {mask.sum().item()} out of {mask.shape[0]} neurons")
+        # custom pruning implementation:
+        for neuroni in range(mask.shape[0]):
+            if mask[neuroni]:
+                layer.mlp.gate_proj.weight.data[neuroni] = 0.0
+                layer.mlp.up_proj.weight.data[neuroni] = 0.0
+                layer.mlp.down_proj.weight.data[:, neuroni] = 0.0
 
-            def __getitem__(self, key):
-                return self.cache_dict[key]
-
-        return loss.item(), SimpleCache(cache), SimpleCache(grad_cache)
-
-    def compute_neuron_importances() -> None:
-        print(
-            f"Computing neuron importances from {num_attribution_batches} batches..."
-        )
-        batch_count = 0
-        for inputs in train_dataloader:
-            if batch_count >= num_attribution_batches:
-                break
-            print(f"Processing attribution batch {batch_count + 1}/{num_attribution_batches}")
-            inputs = _prepare_inputs(inputs)
-            _, cache, grad_cache = get_cache_fwd_and_bwd(model, inputs)
-
-            # Iterate over layers of the transformer model.
-            # (Assumes the model has an attribute "model.layers" containing the layers.)
-            for layer_idx, layer in enumerate(model.model.layers):
-                for mat_name in ["gate_proj", "up_proj", "down_proj"]:
-                    matrix = getattr(layer.mlp, mat_name)
-                    cache_key = id(matrix)
-
-                    neuron_acts = cache.cache_dict.get(cache_key)
-                    neuron_grads = grad_cache.cache_dict.get(cache_key)
-                    if neuron_acts is None or neuron_grads is None:
-                        continue
-
-                    cache_name = f"layer_{layer_idx}_{mat_name}"
-                    if cache_name not in neuron_to_avg_effect:
-                        neuron_to_avg_effect[cache_name] = {}
-
-                    # For each neuron (row of the weight matrix)
-                    for neuron_idx in range(matrix.weight.shape[0]):
-                        # Compute the element-wise product between activations and gradients,
-                        # then sum over the sequence dimension.
-                        neuron_effect = einops.einsum(
-                            neuron_grads[:, :, neuron_idx],
-                            neuron_acts[:, :, neuron_idx],
-                            "batch seq, batch seq -> batch",
-                        )
-                        avg_effect = neuron_effect.mean().item()
-                        neuron_to_avg_effect[cache_name][neuron_idx] = (
-                            neuron_to_avg_effect[cache_name].get(neuron_idx, 0.0) + avg_effect
-                        )
-            batch_count += 1
-
-        # Average the effects over the number of batches.
-        for cache_name in neuron_to_avg_effect:
-            for neuron_idx in neuron_to_avg_effect[cache_name]:
-                neuron_to_avg_effect[cache_name][neuron_idx] /= num_attribution_batches
-
-    def prune_neurons() -> None:
-        total_neurons_pruned = 0
-        total_neurons = 0
-
-        for layer_idx, layer in enumerate(model.model.layers):
-            for mat_name in ["gate_proj", "up_proj", "down_proj"]:
-                matrix = getattr(layer.mlp, mat_name)
-                total_neurons += matrix.weight.shape[0]
-                cache_name = f"layer_{layer_idx}_{mat_name}"
-                neuron_effects = neuron_to_avg_effect.get(cache_name, {})
-                # Identify neurons with absolute average effect below the threshold.
-                neurons_to_prune = [
-                    neuron_idx
-                    for neuron_idx, effect in neuron_effects.items()
-                    if abs(effect) < importance_threshold
-                ]
-                # Create a binary mask (1 = keep, 0 = prune)
-                output_mask = torch.ones(matrix.weight.shape[0], device=matrix.weight.device)
-                output_mask[neurons_to_prune] = 0
-
-                num_pruned = int((output_mask == 0).sum().item())
-                total_neurons_pruned += num_pruned
-
-                full_mask = output_mask.unsqueeze(1).expand_as(matrix.weight)
-                prune.custom_from_mask(matrix, name="weight", mask=full_mask)
-
-            print(f"Layer {layer_idx}: pruned neurons in projections (last num_pruned={num_pruned}).")
-        print(
-            f"Total neurons pruned: {total_neurons_pruned} / {total_neurons} "
-            f"({total_neurons_pruned/total_neurons:.2%})"
-        )
-
-    # Run attribution-based pruning.
-    compute_neuron_importances()
-    prune_neurons()
+    print(
+        f"Total neurons pruned: {total_neurons_pruned} / {total_neurons} "
+        f"({total_neurons_pruned/total_neurons:.2%})"
+    )
 
     if save_pruned_model:
         os.makedirs(output_dir, exist_ok=True)
         model.save_pretrained(output_dir)
         print(f"Pruned model saved to {output_dir}")
+
+    return total_neurons_pruned, total_neurons, neurons_pruned_per_layer
 
 
 def prune_by_weight_norm(
@@ -284,12 +219,16 @@ def prune_by_weight_norm(
     pruning_threshold: float,
     save_pruned_model: bool,
     output_dir: str,
-) -> None:
+) -> Tuple[int, int]:
     """
     Prune neurons by comparing the L2 norm of their associated weights to a threshold.
+    
+    Returns:
+        A tuple (total_neurons_pruned, total_neurons) across all layers.
     """
     total_neurons_pruned = 0
     total_neurons = 0
+    neurons_pruned_per_layer = []
 
     for layer_idx, layer in enumerate(model.model.layers):
         gate_proj = layer.mlp.gate_proj
@@ -313,6 +252,7 @@ def prune_by_weight_norm(
         prune.custom_from_mask(up_proj, name="weight", mask=mask)
         prune.custom_from_mask(down_proj, name="weight", mask=mask.T)
 
+        neurons_pruned_per_layer.append(num_pruned)
         print(f"Layer {layer_idx}: pruned {num_pruned} out of {len(output_mask)} neurons")
 
     print(
@@ -324,6 +264,8 @@ def prune_by_weight_norm(
         os.makedirs(output_dir, exist_ok=True)
         model.save_pretrained(output_dir)
         print(f"Pruned model saved to {output_dir}")
+
+    return total_neurons_pruned, total_neurons, neurons_pruned_per_layer
 
 
 def parse_args() -> argparse.Namespace:
@@ -349,8 +291,6 @@ def parse_args() -> argparse.Namespace:
     # Attribution strategy parameters
     parser.add_argument("--attribution_batch_size", type=int, default=4,
                         help="Batch size used for attribution pruning (not used separately if using same dataloader).")
-    parser.add_argument("--num_attribution_batches", type=int, default=4,
-                        help="Number of batches to use for computing attributions.")
     parser.add_argument("--importance_threshold", type=float, default=1e-7,
                         help="Threshold for neuron importance (attribution pruning).")
 
@@ -366,16 +306,22 @@ def parse_args() -> argparse.Namespace:
     # Evaluation parameters
     parser.add_argument("--test_dataset_name", type=str, default="codeparrot/github-code",
                         help="Dataset name for evaluation.")
-    parser.add_argument("--test_split", type=str, default="test",
+    parser.add_argument("--test_split", type=str, default="train",
                         help="Dataset split to use for evaluation.")
     parser.add_argument("--num_test_samples", type=int, default=200,
                         help="Number of samples to use for evaluation.")
+    # New argument: how many samples to skip for evaluation (if using the same split).
+    parser.add_argument("--eval_skip", type=int, default=0,
+                        help="For streaming datasets, number of samples to skip for evaluation.")
 
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    assert args.num_samples % args.batch_size == 0, "num_samples must be divisible by batch_size"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -384,7 +330,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.float32,
-        device_map={-1: device},  # Ensure model is loaded to the correct device.
+        device_map=str(device)
     )
 
     # Load pruning data.
@@ -397,20 +343,21 @@ def main() -> None:
         num_samples=args.num_samples,
         split="train",
         streaming=args.streaming,
+        skip_samples=0,  # For attribution, start at the beginning.
     )
 
-    # Apply pruning strategy.
+    # Apply pruning strategy and capture pruning statistics.
     if args.pruning_strategy == "attribution":
-        prune_by_attribution(
+        pruning_stats = prune_by_attribution(
             model=model,
             train_dataloader=pruning_dataloader,
             importance_threshold=args.importance_threshold,
-            num_attribution_batches=args.num_attribution_batches,
+            num_attribution_batches=args.num_samples // args.batch_size,
             save_pruned_model=args.save_pruned_model,
             output_dir=args.output_dir,
         )
     elif args.pruning_strategy == "weight_norm":
-        prune_by_weight_norm(
+        pruning_stats = prune_by_weight_norm(
             model=model,
             pruning_threshold=args.pruning_threshold,
             save_pruned_model=args.save_pruned_model,
@@ -420,7 +367,8 @@ def main() -> None:
         print("Invalid pruning strategy selected.")
         return
 
-    # Evaluate the pruned model on test data.
+    # Load evaluation data.
+    # If the dataset only has one split, you can still stream it and skip over the documents used for attribution.
     print("Preparing evaluation data...")
     test_dataloader = prepare_data(
         dataset_name=args.test_dataset_name,
@@ -429,12 +377,18 @@ def main() -> None:
         batch_size=args.batch_size,
         num_samples=args.num_test_samples,
         split=args.test_split,
-        streaming=False,  # usually evaluation is done on a fixed set in memory
+        streaming=args.streaming,  # Streaming can be used for evaluation as well.
+        skip_samples=args.eval_skip,  # Skip over documents already used for attribution.
     )
 
     print("Evaluating pruned model...")
     eval_stats = evaluate_model(model, test_dataloader, device)
-    print(f"Evaluation results: {eval_stats}")
+    # Log pruning statistics with evaluation results.
+    eval_stats["pruning_stats"] = {
+        "total_neurons_pruned": pruning_stats[0],
+        "total_neurons": pruning_stats[1],
+        "neurons_pruned_per_layer": pruning_stats[2],
+    }
 
     # Save evaluation statistics.
     os.makedirs(args.output_dir, exist_ok=True)
@@ -446,3 +400,19 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+"""
+python prune-python.py \
+    --model_name "NousResearch/Llama-3.2-1B" \
+    --pruning_strategy attribution \
+    --max_length 256 \
+    --batch_size 4 \
+    --num_samples 1024 \
+    --streaming \
+    --importance_threshold 0.0000001 \
+    --output_dir test0 \
+    --num_test_samples 1024 \
+    --eval_skip 1024
+"""
