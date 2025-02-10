@@ -497,6 +497,73 @@ def parse_args():
         "--batch_size", type=int, default=4, help="Per-device batch size."
     )
     parser.add_argument(
+        "--accumulations",
+        type=int,
+        default=2,
+        help="Number of gradient accumulation steps.",
+    )
+    parser.add_argument(
+        "--eval_steps", type=int, default=500, help="Perform evaluation every N steps."
+    )
+    parser.add_argument(
+        "--logging_steps", type=int, default=5, help="Log every N steps."
+    )
+    parser.add_argument(
+        "--save_steps", type=int, default=500, help="Save checkpoint every N steps."
+    )
+    parser.add_argument(
+        "--use_streaming", action="store_true", help="Use streaming dataset if set."
+    )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="NousResearch/Llama-3.2-1B",
+        help="Model name or path to a pretrained model.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./pruning_output",
+        help="Directory to store model checkpoints and logs.",
+    )
+    parser.add_argument(
+        "--sparsity_lambda",
+        type=float,
+        default=0.01,
+        help="Regularization strength for L1 penalty.",
+    )
+    parser.add_argument(
+        "--regularizer",
+        type=str,
+        default="l1_sparsity_loss_mlps",
+        choices=REGULARIZERS.keys(),
+        help="Regularization function to use.",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=2e-5, help="Learning rate for Adam optimizer."
+    )
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=10000,
+        help="Total number of training steps to run.",
+    )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=512,
+        help="Maximum sequence length for tokenization.",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        type=int,
+        default=1,
+        help="Number of total epochs to train (if not using max_steps).",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=4, help="Per-device batch size."
+    )
+    parser.add_argument(
         "--eval_steps", type=int, default=500, help="Perform evaluation every N steps."
     )
     parser.add_argument(
@@ -602,6 +669,7 @@ def main():
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps if args.max_steps > 0 else -1,
         per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.accumulations,
         per_device_eval_batch_size=args.batch_size,
         logging_dir=os.path.join(args.output_dir, "logs"),
         logging_steps=args.logging_steps,
@@ -609,6 +677,10 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
+        optim="adamw_torch_fused",  # FASTER OPTIMIZER
+        # fp16=True,  # Set to True if you want mixed precision (and your GPU supports it)
+        bf16=True,  # BF16
+        gradient_checkpointing=False,  # Potential memory savings
         save_total_limit=2,  # EDITS: Only keep the latest two checkpoints
         gradient_accumulation_steps=1,
         fp16=False,  # Set to True if you want mixed precision (and your GPU supports it)
