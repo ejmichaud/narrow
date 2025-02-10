@@ -10,11 +10,16 @@ Usage:
     python prune_finetune.py --model_name <model> --num_train_epochs <epochs> ...
 """
 import os
+from os.path import abspath, join, dirname
 
-# Set up Hugging Face token and environment
-os.environ["TRANSFORMERS_CACHE"] = "../.cache/huggingface"
-os.environ["HF_HOME"] = "../.cache/huggingface"
-os.environ["HF_DATASETS_CACHE"] = "../.cache/huggingface"
+cache_dir = abspath(join(dirname(__file__), "..", ".cache", "huggingface"))
+os.makedirs(cache_dir, exist_ok=True)
+
+os.environ["TRANSFORMERS_CACHE"] = cache_dir
+os.environ["HF_HOME"] = cache_dir
+os.environ["HF_DATASETS_CACHE"] = cache_dir
+os.environ["HF_HUB_CACHE"] = cache_dir
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6"
 
 import argparse
 import torch
@@ -37,6 +42,7 @@ import einops
 import torch.nn.utils.prune as prune
 from typing import Dict, Union, Any, Mapping
 import torch.nn.utils.prune as prune
+import transformers
 
 
 class SparsityTrainer(Trainer):
@@ -94,7 +100,8 @@ def l1_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
     """
     Computes the L1 norm of the L2 norm of the parameters specific to each MLP neuron.
     """
-    L1 = 0.0
+    ref_device = next(model.parameters()).device
+    L1 = torch.tensor(0.0, device=ref_device)
     for layer in model.model.layers:
         gate_proj = layer.mlp.gate_proj.weight  # (4x, x)
         up_proj = layer.mlp.up_proj.weight  # (4x, x)
@@ -104,7 +111,7 @@ def l1_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
             + up_proj.pow(2).sum(dim=1)
             + down_proj.pow(2).sum(dim=0)
         )
-        L1 += L2.abs().sum()
+        L1 += L2.abs().sum().to(ref_device)
     return L1
 
 
@@ -365,35 +372,76 @@ class PruneByWeightNorm(TrainerCallback):
     def prune_neurons(self, model):
         total_neurons_pruned = 0
         total_neurons = 0
+        overall_L2_list = []
 
         for i, layer in enumerate(model.model.layers):
             gate_proj = layer.mlp.gate_proj
             up_proj = layer.mlp.up_proj
             down_proj = layer.mlp.down_proj
 
-            total_neurons += gate_proj.weight.shape[0]
+            neurons_in_layer = gate_proj.weight.shape[0]
+            total_neurons += neurons_in_layer
+
             L2 = torch.sqrt(
                 gate_proj.weight.pow(2).sum(dim=1)
                 + up_proj.weight.pow(2).sum(dim=1)
                 + down_proj.weight.pow(2).sum(dim=0)
             )
-            # L2 Shape: torch.Size([8192])
+            overall_L2_list.append(L2.detach().cpu())
 
-            # Mask neurons based on the L2 norm of the contributing parameters
+            # Ensure the q tensor is on the same device and has same dtype as L2.
+            q_tensor = torch.tensor([0.25, 0.5, 0.75], dtype=L2.dtype, device=L2.device)
+            layer_quartiles = torch.quantile(L2, q_tensor).tolist()
+
+            # Create a mask for neurons with L2 norm above (or equal) to the pruning threshold.
             output_mask = L2 >= self.pruning_threshold
             num_pruned = (~output_mask).sum().item()
             total_neurons_pruned += num_pruned
 
-            mask = output_mask.unsqueeze(1).expand_as(gate_proj.weight)
-            prune.custom_from_mask(gate_proj, name="weight", mask=mask)
-            prune.custom_from_mask(up_proj, name="weight", mask=mask)
-            prune.custom_from_mask(down_proj, name="weight", mask=mask.T)
+            print(f"\nLayer {i}:")
+            print(f"  Pruning threshold: {self.pruning_threshold:.4f}")
+            print(
+                f"  Fraction pruned: {num_pruned} / {neurons_in_layer} = {num_pruned/neurons_in_layer:.2%}"
+            )
+            print(
+                f"  L2 quartiles: 25th: {layer_quartiles[0]:.4f}, Median: {layer_quartiles[1]:.4f}, "
+                f"75th: {layer_quartiles[2]:.4f}"
+            )
 
-            print(f"Layer {i}:")
-            print(f"- Pruned {num_pruned} out of {len(output_mask)} neurons")
+            # Apply pruning based on the computed mask
+            mask = output_mask.unsqueeze(1).expand_as(gate_proj.weight)
+
+            # Update existing pruning if already applied; otherwise, apply the pruning.
+            if hasattr(gate_proj, "weight_orig"):
+                gate_proj.weight_mask.data.copy_(mask)
+            else:
+                prune.custom_from_mask(gate_proj, name="weight", mask=mask)
+            if hasattr(up_proj, "weight_orig"):
+                up_proj.weight_mask.data.copy_(mask)
+            else:
+                prune.custom_from_mask(up_proj, name="weight", mask=mask)
+            if hasattr(down_proj, "weight_orig"):
+                down_proj.weight_mask.data.copy_(mask.T)
+            else:
+                prune.custom_from_mask(down_proj, name="weight", mask=mask.T)
+
+        # Aggregate overall statistics across layers.
+        total_pruned_fraction = (
+            total_neurons_pruned / total_neurons if total_neurons > 0 else 0
+        )
+        overall_L2 = torch.cat(overall_L2_list)
+        q_tensor_global = torch.tensor(
+            [0.25, 0.5, 0.75], dtype=overall_L2.dtype, device=overall_L2.device
+        )
+        global_quartiles = torch.quantile(overall_L2, q_tensor_global).tolist()
 
         print(
-            f"Total neurons pruned across all layers: {total_neurons_pruned} / {total_neurons} ({total_neurons_pruned/total_neurons:.2%})"
+            f"\nTotal neurons pruned across all layers: {total_neurons_pruned} / {total_neurons} "
+            f"({total_pruned_fraction:.2%})"
+        )
+        print(
+            "Global L2 quartiles across all neurons: "
+            f"25th: {global_quartiles[0]:.4f}, Median: {global_quartiles[1]:.4f}, 75th: {global_quartiles[2]:.4f}\n"
         )
 
 
@@ -455,7 +503,7 @@ def parse_args():
         "--logging_steps", type=int, default=5, help="Log every N steps."
     )
     parser.add_argument(
-        "--save_steps", type=int, default=500, help="Save checkpoint every N steps."
+        "--save_steps", type=int, default=10000, help="Save checkpoint every N steps."
     )
     parser.add_argument(
         "--use_streaming", action="store_true", help="Use streaming dataset if set."
@@ -505,7 +553,8 @@ def main():
         #   val_dataset   = dataset.skip(100000).take(20000)
         # Adjust accordingly for your use case.
         # For simplicity, let's pretend we just do a single dataset:
-        train_dataset = dataset.take(1000)
+        # train_dataset = dataset.take(1000)
+        train_dataset = dataset
         val_dataset = None
 
         # For streaming dataset, create attribution dataset from a new stream
@@ -515,7 +564,7 @@ def main():
             languages=["Python"],
             split="train",
             cache_dir="../.cache/huggingface/datasets",
-        ).take(1000)
+        )
     else:
         print("Loading non-streaming dataset")
         dataset = load_dataset(
@@ -560,12 +609,15 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
+        save_total_limit=2,  # EDITS: Only keep the latest two checkpoints
         gradient_accumulation_steps=1,
         fp16=False,  # Set to True if you want mixed precision (and your GPU supports it)
         gradient_checkpointing=True,  # Potential memory savings
         learning_rate=args.lr,
         warmup_steps=1000,
     )
+    # EDITS: Disable saving optimizer state to save space.
+    training_args.save_optimizer_state = False
 
     # Create dataloader for attribution
     attribution_tokenized = prepare_dataset(
@@ -586,22 +638,22 @@ def main():
         tokenizer=tokenizer,
         compute_sparsity_loss=REGULARIZERS[args.regularizer],
         sparsity_lambda=args.sparsity_lambda,
-        callbacks=[
-            PruneByAttributionCallback(
-                model=model,
-                train_dataloader=attribution_dataloader,
-                prune_every_k_steps=10000,
-                importance_threshold=1e-7,
-                attribution_batch_size=args.batch_size,
-            )
-        ],
         # callbacks=[
-        #     PruneByWeightNorm(
+        #     PruneByAttributionCallback(
         #         model=model,
-        #         prune_every_k_steps=5,
-        #         pruning_threshold=1,
+        #         train_dataloader=attribution_dataloader,
+        #         prune_every_k_steps=10000,
+        #         importance_threshold=1e-7,
+        #         attribution_batch_size=args.batch_size,
         #     )
         # ],
+        callbacks=[
+            PruneByWeightNorm(
+                model=model,
+                prune_every_k_steps=100,
+                pruning_threshold=0.2,
+            )
+        ],
     )
 
     # Train
