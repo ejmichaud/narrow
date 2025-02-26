@@ -198,11 +198,35 @@ def lhalf_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
         Lhalf += L2.abs().pow(0.5).sum()
     return Lhalf.pow(2)
 
+def group_lasso_residual_stream(model: nn.Module) -> torch.Tensor:
+    """
+    Computes the L1 norm of the L2 norm (per residual dimension) of all parameters that read from or write to the residual stream,
+    but in a vectorized and faster manner.
+    """
+    d_model = model.config.hidden_size
+    device = model.model.embed_tokens.weight.device
+    dtype = model.model.embed_tokens.weight.dtype
+    sq_sums = torch.zeros(d_model, device=device, dtype=dtype)
+    sq_sums += model.model.embed_tokens.weight.pow(2).sum(dim=0)
+    for layer in model.model.layers:
+        sq_sums += layer.input_layernorm.weight.pow(2)
+        sq_sums += layer.post_attention_layernorm.weight.pow(2)
+        sq_sums += layer.mlp.gate_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.mlp.up_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.mlp.down_proj.weight.pow(2).sum(dim=1)
+        sq_sums += layer.self_attn.q_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.k_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.v_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.o_proj.weight.pow(2).sum(dim=1)
+    sq_sums += model.model.norm.weight.pow(2)
+    return sq_sums.sqrt().sum()
+
 REGULARIZERS = {
     "l1_sparsity_loss": l1_sparsity_loss,
     "l1_sparsity_loss_mlps": l1_sparsity_loss_mlps,
     "l1_of_l2_of_mlps": l1_of_l2_of_mlps,
     "lhalf_of_l2_of_mlps": lhalf_of_l2_of_mlps,
+    "group_lasso_residual_stream": group_lasso_residual_stream,
 }
 
 
@@ -328,6 +352,8 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
+        save_total_limit=1,
+        save_only_model=True,
         optim="adamw_torch_fused",  # FASTER OPTIMIZER
         bf16=True,  # Mixed precision BF16 if your GPU supports it
         gradient_checkpointing=False,  # Potential memory savings
