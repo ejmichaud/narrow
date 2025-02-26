@@ -45,6 +45,7 @@ class SparsityTrainer(Trainer):
         inc_factor: float = 1.01,
         dec_factor: float = 0.99,
         reg_warmup_steps: int = 1000,
+        logging_steps: int = 10,
         **kwargs
     ):
         """
@@ -60,6 +61,7 @@ class SparsityTrainer(Trainer):
             dec_factor: Multiplicative factor to *decrease* regularization if
                 the smoothed loss is rising.
             reg_warmup_steps: Number of steps before starting adaptive regularization.
+            logging_steps: Log every N steps.
         """
         super().__init__(*args, **kwargs)
         self.compute_sparsity_loss = compute_sparsity_loss
@@ -78,6 +80,7 @@ class SparsityTrainer(Trainer):
         self.last_smoothed_loss = None
         self._global_step = 0  # We'll increment this manually to track steps
         self._loss_buffer = []  # Add a buffer for initial loss values
+        self.logging_steps = logging_steps
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """
@@ -100,12 +103,13 @@ class SparsityTrainer(Trainer):
         # Log scalars for inspection
         # Divide reg_loss by self.sparsity_lambda so you can see the "raw" penalty
         # (reg_loss_weighted is the actual penalty added to the objective).
-        if self.sparsity_lambda != 0.0:
-            self.log({"reg_loss": reg_loss.item() / self.sparsity_lambda})
-        self.log({"reg_loss_weighted": reg_loss.item()})
-        self.log({"data_loss": data_loss.item()})
-        self.log({"current_lambda": self.sparsity_lambda})
-        self.log({"smoothed_loss": self.smoothed_loss})
+        if self._global_step % self.logging_steps == 0:
+            if self.sparsity_lambda != 0.0:
+                self.log({"reg_loss": reg_loss.item() / self.sparsity_lambda})
+            self.log({"reg_loss_weighted": reg_loss.item()})
+            self.log({"data_loss": data_loss.item()})
+            self.log({"current_lambda": self.sparsity_lambda})
+            self.log({"smoothed_loss": self.smoothed_loss})
 
         return (total_loss, outputs) if return_outputs else total_loss
 
@@ -255,10 +259,12 @@ def parse_args():
                         help="Number of gradient accumulation steps.")
     parser.add_argument("--eval_steps", type=int, default=500,
                         help="Perform evaluation every N steps.")
-    parser.add_argument("--logging_steps", type=int, default=5,
+    parser.add_argument("--logging_steps", type=int, default=10,
                         help="Log every N steps.")
-    parser.add_argument("--save_steps", type=int, default=500,
+    parser.add_argument("--save_steps", type=int, default=5_000,
                         help="Save checkpoint every N steps.")
+    parser.add_argument("--limit_checkpoints", type=int, default=1,
+                        help="Limit the number of checkpoints saved. Set to -1 for unlimited.")
     parser.add_argument("--use_streaming", action="store_true",
                         help="Use streaming dataset if set.")
 
@@ -352,7 +358,7 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
-        save_total_limit=1,
+        save_total_limit=args.limit_checkpoints,
         save_only_model=True,
         optim="adamw_torch_fused",  # FASTER OPTIMIZER
         bf16=True,  # Mixed precision BF16 if your GPU supports it
@@ -376,6 +382,7 @@ def main():
         inc_factor=args.inc_factor,
         dec_factor=args.dec_factor,
         reg_warmup_steps=args.reg_warmup_steps,
+        logging_steps=args.logging_steps,
     )
 
     # Train
