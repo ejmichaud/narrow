@@ -84,33 +84,53 @@ class SparsityTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """
-        Compute the total loss = data_loss + reg_loss.
-        Also update (if enabled) the adaptive regularization strength every `adjust_steps`.
+        Compute the total loss = data_loss + reg_loss with proper handling of gradient accumulation.
         """
+        # Get the standard language modeling loss
         data_loss, outputs = super().compute_loss(
             model, inputs,
             return_outputs=True,
             **kwargs
         )
-
+        
+        # Store the unscaled data loss for logging and adaptive regularization
+        # This ensures consistent values regardless of gradient_accumulation_steps
+        unscaled_data_loss = data_loss.item() * self.args.gradient_accumulation_steps
+        
         # Track smoothed training loss for adaptive regularization
-        self._update_smoothed_loss(data_loss.item())
-
+        # Use the unscaled loss for consistent behavior
+        self._update_smoothed_loss(unscaled_data_loss)
+        
         # Compute the regularization penalty
-        reg_loss = self.sparsity_lambda * self.compute_sparsity_loss(model)
+        # The regularization should also be scaled down for gradient accumulation
+        # to maintain the same effective regularization strength
+        reg_loss = (self.sparsity_lambda * self.compute_sparsity_loss(model)) / self.args.gradient_accumulation_steps
+        
+        # The total loss is what will be used for backpropagation
         total_loss = data_loss + reg_loss
-
-        # Log scalars for inspection
-        # Divide reg_loss by self.sparsity_lambda so you can see the "raw" penalty
-        # (reg_loss_weighted is the actual penalty added to the objective).
+        
+        # For logging, we want to show the unscaled values
         if self._global_step % self.logging_steps == 0:
+            # For the raw regularization value (before lambda scaling)
             if self.sparsity_lambda != 0.0:
-                self.log({"reg_loss": reg_loss.item() / self.sparsity_lambda})
-            self.log({"reg_loss_weighted": reg_loss.item()})
-            self.log({"data_loss": data_loss.item()})
+                raw_reg_value = reg_loss.item() * self.args.gradient_accumulation_steps / self.sparsity_lambda
+                self.log({"reg_loss": raw_reg_value})
+            
+            # For the weighted regularization (actual contribution to the loss)
+            weighted_reg = reg_loss.item() * self.args.gradient_accumulation_steps
+            self.log({"reg_loss_weighted": weighted_reg})
+            
+            # Log the unscaled data loss
+            self.log({"data_loss": unscaled_data_loss})
+            
+            # Other logging values
             self.log({"current_lambda": self.sparsity_lambda})
             self.log({"smoothed_loss": self.smoothed_loss})
-
+            
+            # Optionally log the total unscaled loss
+            total_unscaled = unscaled_data_loss + weighted_reg
+            self.log({"total_loss": total_unscaled})
+        
         return (total_loss, outputs) if return_outputs else total_loss
 
     def _update_smoothed_loss(self, current_loss: float):
