@@ -14,7 +14,8 @@ Usage:
 """
 
 import os
-os.environ['HF_HOME'] = '/om/user/ericjm/.cache/huggingface'
+# os.environ['HF_HOME'] = '/om/user/ericjm/.cache/huggingface'
+os.environ['HF_HOME'] = os.environ.get('SCRATCH') + '/iaifi_lab/Lab/ericjm/.cache/huggingface'
 import argparse
 import torch
 import torch.nn as nn
@@ -335,13 +336,15 @@ def main():
         dataset = load_dataset("codeparrot/github-code",
                                streaming=True,
                                languages=["Python"],
-                               split="train")
+                               split="train",
+                               trust_remote_code=True)
         train_dataset = dataset
         val_dataset = None
     else:
         dataset = load_dataset("codeparrot/github-code",
                                languages=["Python"],
-                               split="train[:1%]")  # For demonstration
+                               split="train[:1%]",  # For demonstration
+                               trust_remote_code=True)
         train_dataset = dataset.select(range(0, int(0.8 * len(dataset))))
         val_dataset = dataset.select(range(int(0.8 * len(dataset)), len(dataset)))
 
