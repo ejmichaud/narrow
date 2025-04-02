@@ -12,6 +12,7 @@ Usage:
 
 import os
 os.environ['HF_HOME'] = os.environ.get('SCRATCH') + '/iaifi_lab/Lab/ericjm/.cache/huggingface'
+import json
 import argparse
 import torch
 from datasets import load_dataset
@@ -135,6 +136,14 @@ def main():
     config.eos_token_id = tokenizer.eos_token_id
 
     model = AutoModelForCausalLM.from_config(config)
+
+    # save some stats about model parameter count to output_dir
+    model_stats = {
+        "n_params": sum(p.numel() for p in model.parameters()),
+        "n_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+    }
+    with open(os.path.join(args.output_dir, "model_stats.json"), "w") as f:
+        json.dump(model_stats, f)
 
     # Data collator for causal language modeling
     data_collator = DataCollatorForLanguageModeling(
