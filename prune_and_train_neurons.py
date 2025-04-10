@@ -136,159 +136,93 @@ def evaluate_model(model: nn.Module, dataloader: DataLoader, device: torch.devic
     }
 
 
-def mask_by_gradient_attribution(
+def mask_by_attribution(
     model: nn.Module,
-    dataloader: DataLoader,
-    neuron_sparsity: float,
-    residual_sparsity: float,
+    train_dataloader: DataLoader,
+    sparsity: float,
     num_attribution_batches: int,
     output_dir: str, 
 ):
-    """
-    Prune neurons and residual stream dimensions based on their attribution scores.
-    
-    Args:
-        model: The language model to prune.
-        dataloader: DataLoader providing training batches for attribution.
-        neuron_sparsity: Fraction of neurons to prune.
-        residual_sparsity: Fraction of residual stream dimensions to prune.
-        num_attribution_batches: Number of batches to use for computing attribution scores.
-        output_dir: Directory to save pruning information.
-    """
-    model.train()  # Set to train mode to enable gradients
+    """Prune neurons based on their attribution scores."""
 
-    param_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
-    num_samples = 0
-    for i, batch in enumerate(tqdm(dataloader, desc="computing mean gradients...")):
+    def get_attribution_hook(cache, name, hook_cache):
+        def attribution_hook(module, input, output):
+            def backward_hook(grad):
+                modified_grad = -output.detach() * grad
+                cache[name] = modified_grad
+                return grad
+            hook_cache[name] = output.register_hook(backward_hook)
+            return None 
+        return attribution_hook
+
+    scores = {layeri: 0 for layeri in range(len(model.model.layers))}
+    total_activations = {layeri: 0 for layeri in range(len(model.model.layers))}
+    for i, batch in enumerate(tqdm(train_dataloader, desc="attribution scores...")):
         if i >= num_attribution_batches:
             break
-        model.zero_grad()
+        
+        cache = {}
+        forward_hooks = {}
+        backward_handles = {}
+        for layeri in range(len(model.model.layers)):
+            forward_hooks[layeri] = model.model.layers[layeri].mlp.act_fn.register_forward_hook(
+                get_attribution_hook(cache, layeri, backward_handles)
+            )
+
         batch = move_to_device(batch, model.device)
         outputs = model(**batch)
         loss = outputs.loss
         loss.backward()
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                param_grads[name] += param.grad.abs().detach()
-        num_samples += batch['input_ids'].size(0)
-        model.zero_grad()
-    for name in param_grads:
-        if num_samples > 0:
-            param_grads[name] /= num_samples
 
-    neuron_scores = {}
-    for layeri, layer in enumerate(model.model.layers):
-        gp_grad = param_grads[f"model.layers.{layeri}.mlp.gate_proj.weight"]
-        up_grad = param_grads[f"model.layers.{layeri}.mlp.up_proj.weight"]
-        dp_grad = param_grads[f"model.layers.{layeri}.mlp.down_proj.weight"]
-        gp = layer.mlp.gate_proj.weight
-        up = layer.mlp.up_proj.weight
-        dp = layer.mlp.down_proj.weight
-        neuron_scores[layeri] = torch.sum(
-            (gp_grad * -gp) + 
-            (up_grad * -up) + 
-            (dp_grad.T * -dp.T), 
-            dim=1
-        ).abs().tolist()
-    
-    d_model = model.config.hidden_size
-    device = model.model.embed_tokens.weight.device
-    dtype = model.model.embed_tokens.weight.dtype
-    residual_scores = torch.zeros(d_model, device=device, dtype=dtype)
-    residual_scores += (param_grads[f"model.embed_tokens.weight"] * -model.model.embed_tokens.weight).sum(dim=0)
-    for layeri, layer in enumerate(model.model.layers):
-        residual_scores += param_grads[f"model.layers.{layeri}.input_layernorm.weight"] * -layer.input_layernorm.weight
-        residual_scores += param_grads[f"model.layers.{layeri}.post_attention_layernorm.weight"] * -layer.post_attention_layernorm.weight
-        residual_scores += (param_grads[f"model.layers.{layeri}.mlp.gate_proj.weight"] * -layer.mlp.gate_proj.weight).sum(dim=0)
-        residual_scores += (param_grads[f"model.layers.{layeri}.mlp.up_proj.weight"] * -layer.mlp.up_proj.weight).sum(dim=0)
-        residual_scores += (param_grads[f"model.layers.{layeri}.mlp.down_proj.weight"] * -layer.mlp.down_proj.weight).sum(dim=1)
-        residual_scores += (param_grads[f"model.layers.{layeri}.self_attn.q_proj.weight"] * -layer.self_attn.q_proj.weight).sum(dim=0)
-        residual_scores += (param_grads[f"model.layers.{layeri}.self_attn.k_proj.weight"] * -layer.self_attn.k_proj.weight).sum(dim=0)
-        residual_scores += (param_grads[f"model.layers.{layeri}.self_attn.v_proj.weight"] * -layer.self_attn.v_proj.weight).sum(dim=0)
-        residual_scores += (param_grads[f"model.layers.{layeri}.self_attn.o_proj.weight"] * -layer.self_attn.o_proj.weight).sum(dim=1)
-    residual_scores += param_grads[f"model.norm.weight"] * -model.model.norm.weight
-    residual_scores = residual_scores.abs().tolist()
+        # remove hooks and sum attribution scores across batch and seq dim
+        for layeri in range(len(model.model.layers)):
+            attrs = cache[layeri]
+            scores[layeri] += attrs.sum(dim=tuple(range(attrs.ndim - 1))).detach().abs()
+            total_activations[layeri] += attrs.shape[0] * attrs.shape[1]
+            forward_hooks[layeri].remove()
+            backward_handles[layeri].remove()
+        
+        del cache
+        del forward_hooks
+        del backward_handles
+
+    # average scores
+    for layeri in scores:
+        scores[layeri] /= total_activations[layeri]
+
+    score_tuples = []
+    for layeri in range(len(model.model.layers)):
+        for i in range(scores[layeri].shape[0]):
+            score_tuples.append((layeri, i, scores[layeri][i].item()))
+    scores = score_tuples
 
     mask = {name: torch.ones_like(param) for name, param in model.named_parameters()}
 
-    neuron_score_tuples = [
-        (layeri, neuroni, neuron_scores[layeri][neuroni]) 
-        for layeri in neuron_scores for neuroni in range(len(neuron_scores[layeri]))
-    ]
-    neuron_score_tuples.sort(key=lambda x: x[2])  # Sort by score (ascending)
-    n_neurons = sum(layer.mlp.gate_proj.out_features for layer in model.model.layers)
-    neurons_to_prune_count = int(n_neurons * neuron_sparsity)
-    pruned_neurons = []
-    for i in range(min(neurons_to_prune_count, len(neuron_score_tuples))):
-        layeri, neuroni, _ = neuron_score_tuples[i]
-        pruned_neurons.append((layeri, neuroni))
-    for layeri, neuroni in pruned_neurons:
-        mask[f"model.layers.{layeri}.mlp.gate_proj.weight"][neuroni, :] = 0
-        mask[f"model.layers.{layeri}.mlp.up_proj.weight"][neuroni, :] = 0
-        mask[f"model.layers.{layeri}.mlp.down_proj.weight"][:, neuroni] = 0
-    
-    residual_score_tuples = [(i, residual_scores[i]) for i in range(len(residual_scores))]
-    residual_score_tuples.sort(key=lambda x: x[1])  # Sort by score (ascending)
-    n_residuals = model.config.hidden_size
-    residuals_to_prune_count = int(n_residuals * residual_sparsity)
-    pruned_residuals = []
-    for i in range(min(residuals_to_prune_count, len(residual_score_tuples))):
-        dim_idx, _ = residual_score_tuples[i]
-        pruned_residuals.append(dim_idx)
-    mask[f"model.embed_tokens.weight"][:, pruned_residuals] = 0
-    for layeri, layer in enumerate(model.model.layers):
-        mask[f"model.layers.{layeri}.input_layernorm.weight"][pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.post_attention_layernorm.weight"][pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.mlp.gate_proj.weight"][:, pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.mlp.up_proj.weight"][:, pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.mlp.down_proj.weight"][pruned_residuals, :] = 0
-        mask[f"model.layers.{layeri}.self_attn.q_proj.weight"][:, pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.self_attn.k_proj.weight"][:, pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.self_attn.v_proj.weight"][:, pruned_residuals] = 0
-        mask[f"model.layers.{layeri}.self_attn.o_proj.weight"][pruned_residuals, :] = 0
-    mask[f"model.norm.weight"][pruned_residuals] = 0
-    
-    # Apply mask to model parameters
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if name in mask:
-                param.data *= mask[name]
-    
+    # sort the scores and prune the lowest sparsity fraction
+    scores.sort(key=lambda x: x[2])
+    num_pruned = int(sparsity * len(scores))
+    neurons_pruned_per_layer = defaultdict(int)
+    total_neurons_pruned = 0
+    for i in tqdm(range(num_pruned), desc="pruning neurons..."):
+        layer_idx, neuron_idx, _ = scores[i]
+        mask[f"model.layers.{layer_idx}.mlp.gate_proj.weight"][neuron_idx] = 0.0
+        mask[f"model.layers.{layer_idx}.mlp.up_proj.weight"][neuron_idx] = 0.0
+        mask[f"model.layers.{layer_idx}.mlp.down_proj.weight"][:, neuron_idx] = 0.0
+        neurons_pruned_per_layer[layer_idx] += 1
+        total_neurons_pruned += 1
+    total_neurons = len(scores)
+
     stats = {
-        "pruned_neurons": pruned_neurons,
-        "pruned_residuals": pruned_residuals,
-        "neuron_scores": neuron_scores,
-        "residual_scores": residual_scores,
-        "total_neurons": n_neurons,
-        "total_residuals": n_residuals,
-        "total_neurons_pruned": len(pruned_neurons),
-        "total_residuals_pruned": len(pruned_residuals),
+        "total_neurons_pruned": total_neurons_pruned,
+        "total_neurons": total_neurons,
+        "neurons_pruned_per_layer": neurons_pruned_per_layer,
     }
 
-    # Print statistics for debugging
-    print("\n=== Pruning Statistics ===")
-    print(f"Total neurons: {n_neurons}")
-    print(f"Total residuals: {n_residuals}")
-    print(f"Neurons pruned: {len(pruned_neurons)} / {n_neurons} ({len(pruned_neurons)/n_neurons:.2%})")
-    print(f"Residuals pruned: {len(pruned_residuals)} / {n_residuals} ({len(pruned_residuals)/n_residuals:.2%})")
-    
-    # Print some of the pruned indices for verification
-    if pruned_neurons:
-        print(f"\nSample of pruned neurons: {pruned_neurons[:5]}{'...' if len(pruned_neurons) > 5 else ''}")
-    if pruned_residuals:
-        print(f"Sample of pruned residuals: {pruned_residuals[:5]}{'...' if len(pruned_residuals) > 5 else ''}")
-    
-    # Print some attribution score statistics
-    if neuron_scores:
-        # Convert dictionary of lists to a flat numpy array
-        neuron_scores_array = np.concatenate([np.array(scores) for scores in neuron_scores.values()])
-        print(f"\nNeuron attribution scores - min: {neuron_scores_array.min():.6f}, max: {neuron_scores_array.max():.6f}, mean: {neuron_scores_array.mean():.6f}")
-    
-    if residual_scores:
-        residual_scores_array = np.array(residual_scores)
-        print(f"Residual attribution scores - min: {residual_scores_array.min():.6f}, max: {residual_scores_array.max():.6f}, mean: {residual_scores_array.mean():.6f}")
-    print("===========================\n")
-    
+    print(
+        f"Total neurons pruned: {total_neurons_pruned} / {total_neurons} "
+        f"({total_neurons_pruned/total_neurons:.2%})"
+    )
+
     return mask, stats
 
 
@@ -347,10 +281,8 @@ def parse_args() -> argparse.Namespace:
                         help="Directory to save the pruned and trained model.")
 
     # Pruning parameters
-    parser.add_argument("--neuron_sparsity", type=float, default=0.8,
+    parser.add_argument("--sparsity", type=float, default=0.5,
                         help="Fraction of neurons to prune.")
-    parser.add_argument("--residual_sparsity", type=float, default=0.5,
-                        help="Fraction of residual stream dimensions to prune.")
     parser.add_argument("--prune_samples", type=int, default=1000,
                         help="Number of samples to use for pruning data.")
     parser.add_argument("--prune_skip", type=int, default=0,
@@ -361,6 +293,8 @@ def parse_args() -> argparse.Namespace:
     #                     help="Number of samples to use for training data.")
     parser.add_argument("--train_skip", type=int, default=0,
                         help="Number of samples to skip for training (if streaming).")
+    parser.add_argument("--num_train_epochs", type=int, default=3,
+                        help="Number of epochs to train (if not using max_steps).")
     parser.add_argument("--max_steps", type=int, default=-1,
                         help="Total number of training steps to run. -1 means use num_train_epochs.")
     parser.add_argument("--lr", type=float, default=5e-5,
@@ -392,11 +326,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
+    # Load the model
     print(f"Loading model: {args.model_name}")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
@@ -422,11 +359,10 @@ def main() -> None:
     # Create mask based on attribution scores
     print("Creating pruning mask based on attribution scores...")
     num_attribution_batches = args.prune_samples // args.batch_size
-    mask, pruning_stats = mask_by_gradient_attribution(
+    mask, pruning_stats = mask_by_attribution(
         model=model,
-        dataloader=pruning_dataloader,
-        neuron_sparsity=args.neuron_sparsity,
-        residual_sparsity=args.residual_sparsity,
+        train_dataloader=pruning_dataloader,
+        sparsity=args.sparsity,
         num_attribution_batches=num_attribution_batches,
         output_dir=args.output_dir
     )
@@ -517,6 +453,7 @@ def main() -> None:
     # Set up training arguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
+        num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps if args.max_steps > 0 else -1,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -534,7 +471,7 @@ def main() -> None:
         bf16=True if torch.cuda.is_available() else False,
         optim="adamw_torch_fused",
         lr_scheduler_type="cosine",
-        weight_decay=0.00,
+        weight_decay=0.01,
     )
     
     # Initialize the MaskedTrainer with the mask

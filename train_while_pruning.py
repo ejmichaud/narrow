@@ -162,10 +162,14 @@ class PruningTrainer(Trainer):
         # Initialize masks and gradient EMA
         self.mask = {name: torch.ones_like(param) for name, param in self.model.named_parameters()} 
         self.gradient_ema = {name: torch.zeros_like(param) for name, param in self.model.named_parameters()}
+
+        # use sets for faster lookup
+        self.pruned_neurons = set()
+        self.pruned_residuals = set()
         
         # Track the order in which components are pruned
-        self.pruned_neurons = list()
-        self.pruned_residuals = list()
+        self.pruned_neurons_order = list()
+        self.pruned_residuals_order = list()
     
     def get_neuron_sparsity(self) -> float:
         """
@@ -250,7 +254,8 @@ class PruningTrainer(Trainer):
             layeri, neuroni, _ = neuron_score_tuples.pop(0)
             if (layeri, neuroni) not in self.pruned_neurons:
                 neurons_to_prune.append((layeri, neuroni))
-                self.pruned_neurons.append((layeri, neuroni))
+                self.pruned_neurons.add((layeri, neuroni))
+                self.pruned_neurons_order.append((layeri, neuroni))
         for layeri, neuroni in neurons_to_prune:
             self.mask[f"model.layers.{layeri}.mlp.gate_proj.weight"][neuroni, :] = 0
             self.mask[f"model.layers.{layeri}.mlp.up_proj.weight"][neuroni, :] = 0
@@ -275,7 +280,9 @@ class PruningTrainer(Trainer):
             i, _ = residual_score_tuples.pop(0)
             if i not in self.pruned_residuals:
                 residuals_to_prune.append(i)
-                self.pruned_residuals.append(i)
+                self.pruned_residuals.add(i)
+                self.pruned_residuals_order.append(i)
+        self.mask[f"model.embed_tokens.weight"][:, residuals_to_prune] = 0
         for layeri, layer in enumerate(self.model.model.layers):
             self.mask[f"model.layers.{layeri}.input_layernorm.weight"][residuals_to_prune] = 0
             self.mask[f"model.layers.{layeri}.post_attention_layernorm.weight"][residuals_to_prune] = 0
@@ -495,10 +502,10 @@ def main():
     torch.save(trainer.mask, os.path.join(args.output_dir, "mask.pt"))
 
     # save the mask, pruned neurons, and pruned residuals
-    with open(os.path.join(args.output_dir, "pruned_neurons.json"), "w") as f:
-        json.dump(trainer.pruned_neurons, f)
-    with open(os.path.join(args.output_dir, "pruned_residuals.json"), "w") as f:
-        json.dump(trainer.pruned_residuals, f)
+    with open(os.path.join(args.output_dir, "pruned_neurons_order.json"), "w") as f:
+        json.dump(trainer.pruned_neurons_order, f)
+    with open(os.path.join(args.output_dir, "pruned_residuals_order.json"), "w") as f:
+        json.dump(trainer.pruned_residuals_order, f)
 
     # Save the training arguments
     args_dict = vars(args)
