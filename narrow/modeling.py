@@ -1,4 +1,3 @@
-
 from typing import List, Optional, Union
 
 import torch
@@ -167,53 +166,42 @@ class VariableSizeLlamaForCausalLM(LlamaForCausalLM):
 
 def create_variable_size_llama_config(config: LlamaConfig, intermediate_sizes: List[int]) -> VariableSizeLlamaConfig:
     """Create a VariableSizeLlamaConfig from a LlamaConfig and a list of intermediate sizes."""
+    config_dict = config.to_dict()
+    # Remove intermediate_size from the config dict since we'll pass it separately
+    config_dict.pop('intermediate_size', None)
     return VariableSizeLlamaConfig(
-        **config.to_dict(),
+        **config_dict,
         intermediate_size=intermediate_sizes,
     )
 
 def convert_pruned_to_variable_size(model: LlamaForCausalLM) -> VariableSizeLlamaForCausalLM:
     """Convert a pruned LlamaForCausalLM model to a variable size LlamaForCausalLM model."""
-    # first determine the pruned residual stream dimensions
-    pruned_res_dims = torch.ones(model.model.config.hidden_size, dtype=torch.bool)
-    inter_neurons_retained = []
-    for layeri in range(len(model.model.layers)):
-        pruned_neurons = (model.model.layers[layeri].mlp.gate_proj.weight.data != 0).any(dim=0).nonzero()[:, 0].tolist()
-        inter_neurons_retained.append([i for i in range(model.model.layers[layeri].mlp.gate_proj.out_features) if i not in pruned_neurons])
 
-    for layeri= (model.model.layers[0].mlp.gate_proj.weight.data == 0).all(dim=1).nonzero()[:, 0].tolist()
-    remaining_residual_stream_dimensions = [i for i in range(model.model.config.hidden_size) if i not in pruned_residual_stream_dimensions]
-    d_model = len(remaining_residual_stream_dimensions)
-    # check that all layers have the same pruned residual stream dimensions
-    for layeri in range(len(model.model.layers)):
-        layeri_pruned = (model.model.layers[layeri].mlp.gate_proj.weight.data == 0).all(dim=1).nonzero()[:, 0].tolist()
-        # compute difference between layeri_pruned and pruned_residual_stream_dimensions
-        diff = [i for i in layeri_pruned if i not in pruned_residual_stream_dimensions]
-        print("Layer " + str(layeri) + " pruned dimensions: ", diff)
-        assert len(diff) == 0, "Layer " + str(layeri) + " has different pruned residual stream dimensions than layer 0"
+    res_retained = (model.model.embed_tokens.weight.data != 0).any(dim=0)
+    neurons_retained = [
+        (layer.mlp.gate_proj.weight.data != 0).any(dim=1)
+        for layer in model.model.layers
+    ]
 
-    # get intermediate sizes
-    intermediate_sizes = []
-    intermediate_neurons_retained = []
-    for layeri in range(len(model.model.layers)):
-        pruned_neurons = (model.model.layers[layeri].mlp.gate_proj.weight.data == 0).all(dim=0).nonzero()[:, 0].tolist()
-        remaining_neurons = [i for i in range(model.model.layers[layeri].mlp.gate_proj.out_features) if i not in pruned_neurons]
-        intermediate_neurons_retained.append(remaining_neurons)
-        intermediate_sizes.append(len(remaining_neurons))
-    
-    print("Pruned hidden_size: ", d_model)
-    print("Intermediate sizes: ", intermediate_sizes)
-
-    # initialize VariableSizeLlamaConfig
+    intermediate_sizes = [sum(neurons_retained[i]) for i in range(len(neurons_retained))]
     config = create_variable_size_llama_config(model.config, intermediate_sizes)
-    config.hidden_size = d_model
+    config.hidden_size = sum(res_retained)
     new_model = VariableSizeLlamaForCausalLM(config)
 
-    # copy over the weights, removing dimensions
-    new_model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data[:, remaining_residual_stream_dimensions]
+    new_model.model.embed_tokens.weight.data = model.model.embed_tokens.weight.data[:, res_retained]
     for layeri in range(len(model.model.layers)):
-        new_model.model.layers[layeri].mlp.gate_proj.weight.data = model.model.layers[layeri].mlp.gate_proj.weight.data[:, intermediate_neurons_retained[layeri]]
-        new_model.model.layers[layeri].mlp.up_proj.weight.data = model.model.layers[layeri].mlp.up_proj.weight.data[:, intermediate_neurons_retained[layeri]]
-        new_model.model.layers[layeri].mlp.down_proj.weight.data = model.model.layers[layeri].mlp.down_proj.weight.data[intermediate_neurons_retained[layeri], :]
-
+        # layernorms
+        new_model.model.layers[layeri].input_layernorm.weight.data = model.model.layers[layeri].input_layernorm.weight.data[res_retained]
+        new_model.model.layers[layeri].post_attention_layernorm.weight.data = model.model.layers[layeri].post_attention_layernorm.weight.data[res_retained]
+        # mlp
+        new_model.model.layers[layeri].mlp.gate_proj.weight.data = model.model.layers[layeri].mlp.gate_proj.weight.data[neurons_retained[layeri],:][:,res_retained]
+        new_model.model.layers[layeri].mlp.up_proj.weight.data = model.model.layers[layeri].mlp.up_proj.weight.data[neurons_retained[layeri],:][:,res_retained]
+        new_model.model.layers[layeri].mlp.down_proj.weight.data = model.model.layers[layeri].mlp.down_proj.weight.data[res_retained,:][:,neurons_retained[layeri]]
+        # self-attention
+        new_model.model.layers[layeri].self_attn.q_proj.weight.data = model.model.layers[layeri].self_attn.q_proj.weight.data[:, res_retained]
+        new_model.model.layers[layeri].self_attn.k_proj.weight.data = model.model.layers[layeri].self_attn.k_proj.weight.data[:, res_retained]
+        new_model.model.layers[layeri].self_attn.v_proj.weight.data = model.model.layers[layeri].self_attn.v_proj.weight.data[:, res_retained]
+        new_model.model.layers[layeri].self_attn.o_proj.weight.data = model.model.layers[layeri].self_attn.o_proj.weight.data[res_retained, :]
+    new_model.model.norm.weight.data = model.model.norm.weight.data[res_retained]
+    
     return new_model
