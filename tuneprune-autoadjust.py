@@ -223,6 +223,28 @@ def lhalf_of_l2_of_mlps(model: nn.Module) -> torch.Tensor:
         Lhalf += L2.abs().pow(0.5).sum()
     return Lhalf.pow(2)
 
+def group_hoyer_neurons(model: nn.Module) -> torch.Tensor:
+    """
+    Computes the Hoyer norm of the L2s of the parameters for each MLP neuron.
+    """
+    n_layers = len(model.model.layers)
+    intermediate_size = model.config.intermediate_size
+    neuron_l2s = torch.zeros(n_layers * intermediate_size)
+    for layeri in range(len(model.model.layers)):
+        gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
+        up_proj = model.model.layers[layeri].mlp.up_proj.weight     # (4x, x)
+        down_proj = model.model.layers[layeri].mlp.down_proj.weight # (x, 4x)
+        L2 = torch.sqrt(
+            gate_proj.pow(2).sum(dim=1) +
+            up_proj.pow(2).sum(dim=1) +
+            down_proj.pow(2).sum(dim=0)
+        )
+        neuron_l2s[layeri * intermediate_size:(layeri + 1) * intermediate_size] = L2
+    L1 = neuron_l2s.abs().sum()
+    L2 = neuron_l2s.pow(2).sum().sqrt()
+    return L1 / L2
+    
+
 def group_lasso_residual_stream(model: nn.Module) -> torch.Tensor:
     """
     Computes the L1 norm of the L2 norm (per residual dimension) of all parameters that read from or write to the residual stream,
@@ -246,12 +268,40 @@ def group_lasso_residual_stream(model: nn.Module) -> torch.Tensor:
     sq_sums += model.model.norm.weight.pow(2)
     return sq_sums.sqrt().sum()
 
+def group_hoyer_residual_stream(model: nn.Module) -> torch.Tensor:
+    """
+    Computes the Hoyer norm of the L2s of the parameters that read from or write to the residual stream,
+    but in a vectorized and faster manner.
+    """
+    d_model = model.config.hidden_size
+    device = model.model.embed_tokens.weight.device
+    dtype = model.model.embed_tokens.weight.dtype
+    sq_sums = torch.zeros(d_model, device=device, dtype=dtype)
+    sq_sums += model.model.embed_tokens.weight.pow(2).sum(dim=0)
+    for layer in model.model.layers:
+        sq_sums += layer.input_layernorm.weight.pow(2)
+        sq_sums += layer.post_attention_layernorm.weight.pow(2)
+        sq_sums += layer.mlp.gate_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.mlp.up_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.mlp.down_proj.weight.pow(2).sum(dim=1)
+        sq_sums += layer.self_attn.q_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.k_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.v_proj.weight.pow(2).sum(dim=0)
+        sq_sums += layer.self_attn.o_proj.weight.pow(2).sum(dim=1)
+    sq_sums += model.model.norm.weight.pow(2)
+    res_l2s = sq_sums.sqrt()
+    L1 = res_l2s.abs().sum()
+    L2 = res_l2s.pow(2).sum().sqrt()
+    return L1 / L2
+
 REGULARIZERS = {
     "l1_sparsity_loss": l1_sparsity_loss,
     "l1_sparsity_loss_mlps": l1_sparsity_loss_mlps,
     "l1_of_l2_of_mlps": l1_of_l2_of_mlps,
     "lhalf_of_l2_of_mlps": lhalf_of_l2_of_mlps,
     "group_lasso_residual_stream": group_lasso_residual_stream,
+    "group_hoyer_neurons": group_hoyer_neurons,
+    "group_hoyer_residual_stream": group_hoyer_residual_stream,
 }
 
 
