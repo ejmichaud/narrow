@@ -15,6 +15,21 @@ from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
 )
 
+class VariableSizeLlamaRMSNorm(LlamaRMSNorm):
+    def __init__(self, hidden_size, original_hidden_size, eps=1e-6):
+        super().__init__(hidden_size, eps)
+        self.variance_epsilon = eps
+        self.D = hidden_size # dimension of pruned model
+        self.Z = original_hidden_size - hidden_size # number of "hidden" zeros in residual stream
+    
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        # compute variance as if there were self.Z zeros appended to hidden_states
+        variance = hidden_states.pow(2).mean(-1, keepdim=True) * self.D / (self.D + self.Z)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
 
 class VariableSizeLlamaConfig(LlamaConfig):
     r"""
@@ -24,6 +39,7 @@ class VariableSizeLlamaConfig(LlamaConfig):
         intermediate_size (`int` or `List[int]`, *optional*, defaults to 11008):
             Dimension of the MLP representations. Can be a single integer (all layers have the same size) or a list of 
             integers (one per layer). If a list is provided, its length must match `num_hidden_layers`.
+        original_hidden_size (`int`, *optional*, defaults to 2048):
         
         # ... all other args from LlamaConfig ...
     """
@@ -34,6 +50,7 @@ class VariableSizeLlamaConfig(LlamaConfig):
         self,
         vocab_size=32000,
         hidden_size=4096,
+        original_hidden_size=2048,
         intermediate_size=11008,
         num_hidden_layers=32,
         num_attention_heads=32,
@@ -56,6 +73,7 @@ class VariableSizeLlamaConfig(LlamaConfig):
         head_dim=None,
         **kwargs,
     ):
+        self.original_hidden_size = original_hidden_size
         # Process the intermediate_size parameter
         if isinstance(intermediate_size, list):
             if len(intermediate_size) != num_hidden_layers:
@@ -125,8 +143,8 @@ class VariableSizeLlamaDecoderLayer(LlamaDecoderLayer):
         # Use the variable size MLP
         self.mlp = VariableSizeLlamaMLP(config, layer_idx)
         
-        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = VariableSizeLlamaRMSNorm(config.hidden_size, config.original_hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = VariableSizeLlamaRMSNorm(config.hidden_size, config.original_hidden_size, eps=config.rms_norm_eps)
 
 
 class VariableSizeLlamaModel(LlamaModel):
@@ -142,7 +160,7 @@ class VariableSizeLlamaModel(LlamaModel):
             [VariableSizeLlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = VariableSizeLlamaRMSNorm(config.hidden_size, config.original_hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
@@ -171,6 +189,7 @@ def create_variable_size_llama_config(config: LlamaConfig, intermediate_sizes: L
     config_dict.pop('intermediate_size', None)
     return VariableSizeLlamaConfig(
         **config_dict,
+        original_hidden_size=config.hidden_size,
         intermediate_size=intermediate_sizes,
     )
 
