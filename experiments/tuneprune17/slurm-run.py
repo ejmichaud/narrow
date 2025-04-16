@@ -36,35 +36,40 @@ def main():
     # 3 configurations for Hoyer loss on residual stream
     configs = [
         {
-            "name": "hoyer_neurons_0.0001",
+            "name": "hoyer_neurons_1.0",
             "regularizer": "group_hoyer_neurons",
-            "sparsity_lambda": "0.0001",
+            "sparsity_lambda": "1.0",
         },
-        {
-            "name": "hoyer_neurons_0.005",
-            "regularizer": "group_hoyer_neurons",
-            "sparsity_lambda": "0.005",
-        },
-        {
-            "name": "hoyer_neurons_0.1",
-            "regularizer": "group_hoyer_neurons",
-            "sparsity_lambda": "0.1",
-        },
-        {
-            "name": "hoyer_residual_0.001",
-            "regularizer": "group_hoyer_residual_stream",
-            "sparsity_lambda": "0.001",
-        },
-        {
-            "name": "hoyer_residual_0.05",
-            "regularizer": "group_hoyer_residual_stream",
-            "sparsity_lambda": "0.05",
-        },
-        {
-            "name": "hoyer_residual_0.5",
-            "regularizer": "group_hoyer_residual_stream",
-            "sparsity_lambda": "0.5",
-        }
+        # {
+        #     "name": "hoyer_neurons_5.0",
+        #     "regularizer": "group_hoyer_neurons",
+        #     "sparsity_lambda": "5.0",
+        # },
+        # {
+        #     "name": "hoyer_neurons_50.0",
+        #     "regularizer": "group_hoyer_neurons",
+        #     "sparsity_lambda": "50.0",
+        # },
+        # {
+        #     "name": "hoyer_neurons_1000.0",
+        #     "regularizer": "group_hoyer_neurons",
+        #     "sparsity_lambda": "1000.0",
+        # },
+        # {
+        #     "name": "hoyer_residual_0.001",
+        #     "regularizer": "group_hoyer_residual_stream",
+        #     "sparsity_lambda": "0.001",
+        # },
+        # {
+        #     "name": "hoyer_residual_0.05",
+        #     "regularizer": "group_hoyer_residual_stream",
+        #     "sparsity_lambda": "0.05",
+        # },
+        # {
+        #     "name": "hoyer_residual_0.5",
+        #     "regularizer": "group_hoyer_residual_stream",
+        #     "sparsity_lambda": "0.5",
+        # }
     ]
 
     # Common training parameters

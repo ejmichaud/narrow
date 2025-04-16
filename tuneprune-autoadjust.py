@@ -229,7 +229,9 @@ def group_hoyer_neurons(model: nn.Module) -> torch.Tensor:
     """
     n_layers = len(model.model.layers)
     intermediate_size = model.config.intermediate_size
-    neuron_l2s = torch.zeros(n_layers * intermediate_size)
+    device = model.model.layers[0].mlp.gate_proj.weight.device
+    dtype = model.model.layers[0].mlp.gate_proj.weight.dtype
+    neuron_l2s = torch.zeros(n_layers * intermediate_size, device=device, dtype=dtype)
     for layeri in range(len(model.model.layers)):
         gate_proj = model.model.layers[layeri].mlp.gate_proj.weight # (4x, x)
         up_proj = model.model.layers[layeri].mlp.up_proj.weight     # (4x, x)
