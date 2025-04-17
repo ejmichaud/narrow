@@ -12,8 +12,9 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import wandb
 import matplotlib.pyplot as plt
 import numpy as np
+import json
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # TRY ABLATING BY IMPORTANCE
@@ -178,7 +179,7 @@ class Net(nn.Module):
         return active_neurons
 
 
-# options: l1, tied_l1, tied_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_l2, tied_l2_with_lhalf, tied_l1_with_lhalf
+# options: l1, tied_l1, tied_l2, tied_l2_with_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_lhalf, tied_l1_with_lhalf
 def pruning_loss(model, penalty_type="tied_l2_with_l2"):
     penalty = 0.0
     for i in range(len(model.fc_layers)):
@@ -208,9 +209,7 @@ def pruning_loss(model, penalty_type="tied_l2_with_l2"):
             # Concatenate W1 with transposed W2 along dim=1
             combined = torch.cat([W1, W2.t()], dim=1)
             # Take norm of each row (where each row represents all weights connected to one neuron), then divide by # of params
-            penalty = penalty + (torch.norm(combined, p=2, dim=1).sum()) / (
-                W1.numel() + W2.numel()
-            )
+            penalty = penalty + (torch.norm(combined, p=2, dim=1).sum())
 
         # inverse L2 of L2s of tied weights
         elif penalty_type == "tied_l2_with_l2":
@@ -296,9 +295,15 @@ def train(
     beta,
     penalty_type,
     max_grad_norm=1.0,
+    total_datapoints=0,
+    partial_epoch=False,
+    segment_index=0,  # 0-15 for each 1/16 of epoch
 ):
+    # Simplified segment naming
+    segment_name = f"segment {segment_index+1}/16"
+
     print(
-        f"\nStarting training with beta={beta}, penalty_type={penalty_type}, epoch={epoch}"
+        f"\nStarting {segment_name} of training with beta={beta}, penalty_type={penalty_type}, epoch={epoch}, total_datapoints={total_datapoints}"
     )
     model.train()
     total_loss = 0
@@ -307,17 +312,35 @@ def train(
     total_samples = 0
     total_norm = 0
 
-    for batch_idx, (data, target) in enumerate(train_loader, 1):
+    active_neurons = None  # Initialize to avoid reference before assignment
+    total_active = 0  # Initialize here to avoid the UnboundLocalError
+
+    # Calculate how many batches to process for this segment of epoch
+    dataset_size = len(train_loader.dataset)
+    total_batches = len(train_loader)
+    segment_batches = total_batches // 16
+
+    # Determine which batches to process
+    start_batch = segment_index * segment_batches
+    end_batch = (
+        (segment_index + 1) * segment_batches if segment_index < 15 else total_batches
+    )
+
+    for batch_idx, (data, target) in enumerate(train_loader, 0):
+        # Skip batches not in our segment
+        if partial_epoch and (batch_idx < start_batch or batch_idx >= end_batch):
+            continue
+
         # PLOTTING
-        if batch_idx % 100 == 1:
-            visualize_mlp(
-                model=model, weight_threshold=0.0, color_range=[-0.3, 0.3]
-            )  # HERE
-            plt.title(f"Step {len(os.listdir('data/weight_vis'))}")
-            plt.savefig(
-                f"data/weight_vis/pruning_step_{len(os.listdir('data/weight_vis')):04d}.png"
-            )
-            plt.close()
+        # if batch_idx % 100 == 1:
+        #     visualize_mlp(
+        #         model=model, weight_threshold=0.0, color_range=[-0.3, 0.3]
+        #     )  # HERE
+        #     plt.title(f"Step {len(os.listdir('data/weight_vis'))}")
+        #     plt.savefig(
+        #         f"data/weight_vis/pruning_step_{len(os.listdir('data/weight_vis')):04d}.png"
+        #     )
+        #     plt.close()
 
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
@@ -327,8 +350,7 @@ def train(
         loss_ce = F.cross_entropy(output, target)
         penalty = pruning_loss(model, penalty_type=penalty_type)
         detached_penalty = torch.tensor(penalty).detach()
-        # beta=0.18 works well -- 0.23 for methods that take inverses
-        loss = loss_ce + beta * (penalty)
+        loss = loss_ce + beta * penalty
 
         # Backward pass and optimization
         loss.backward()
@@ -344,12 +366,17 @@ def train(
 
         optimizer.step()
 
-        # Update masks
+        # Update masks if we're still pruning, otherwise just calculate active neurons
         if beta > 0:
             active_neurons = model.update_masks()
-            total_active = sum(
-                active_neurons
-            )  # No longer adding input and output layer neurons
+        else:
+            # Just calculate the active neurons without updating masks
+            active_neurons = []
+            for i, layer in enumerate(model.fc_layers):
+                active_count = int(model.masks[i].sum().item())
+                active_neurons.append(active_count)
+
+        total_active = sum(active_neurons)
 
         total_loss += loss
         total_ce_loss += loss_ce
@@ -357,20 +384,26 @@ def train(
         correct += pred.eq(target.view_as(pred)).sum().item()
         total_samples += data.size(0)
 
-    # Calculate average weight norm across all layers for printing
+    # Calculate final metrics for the segment
+    avg_loss = total_loss / total_samples if total_samples > 0 else 0
+    avg_ce_loss = total_ce_loss / total_samples if total_samples > 0 else 0
+    avg_pruning_loss = avg_loss - avg_ce_loss
+    accuracy = 100.0 * correct / total_samples if total_samples > 0 else 0
+    current_datapoints = total_datapoints + total_samples
+
+    # Calculate average weight norm
     param_count = 0
+    total_norm = 0
     for layer in model.fc_layers + [model.output_layer]:
         layer_norm = torch.norm(layer.weight, p=1)
         total_norm += layer_norm
         param_count += layer.weight.numel()
     avg_weight_norm = total_norm / param_count
-    avg_loss = total_loss / total_samples
-    avg_ce_loss = total_ce_loss / total_samples
-    avg_pruning_loss = avg_loss - avg_ce_loss
-    accuracy = 100.0 * correct / total_samples
+
+    segment_str = f"segment {segment_index+1}/16"
     print(
-        f"Train Epoch: {epoch} [{total_samples}/{len(train_loader.dataset)} "
-        f"({100. * total_samples / len(train_loader.dataset):.0f}%)]\t"
+        f"Train Epoch: {epoch} {segment_str} [{total_samples}/{len(train_loader.dataset)//16 if partial_epoch else len(train_loader.dataset)} "
+        f"({100. * total_samples / (len(train_loader.dataset)//16 if partial_epoch else len(train_loader.dataset)):.0f}%)]\t"
         f"Loss: {avg_loss:.6f}\tAccuracy: {accuracy:.2f}%"
     )
     print(f"Active neurons per layer: {active_neurons}")
@@ -379,20 +412,10 @@ def train(
     print(f"Average CE Loss: {avg_ce_loss.item():.6f}")
     print(f"Average Pruning Loss: {avg_pruning_loss.item():.6f}")
     print(f"Average Loss: {avg_loss.item():.6f}")
+    print(f"Total datapoints processed: {current_datapoints}")
 
-    # Log metrics to W&B
-    # wandb.log(
-    #     {
-    #         "epoch": epoch,
-    #         "average_weight_norm": avg_weight_norm.item(),
-    #         "pruning_loss": avg_pruning_loss.item(),
-    #         "ce_loss": avg_ce_loss.item(),
-    #         "active_neurons": total_active,
-    #         "accuracy": accuracy,
-    #     }
-    # )
-
-    return beta, total_samples
+    # Return metrics at the end of the segment
+    return beta, total_samples, current_datapoints, active_neurons, accuracy
 
 
 def test(model, device, test_loader):
@@ -438,31 +461,38 @@ def print_network_statistics(model):
     return active_neurons
 
 
-def save_accuracy_data(model_accuracies, pruning_penalty):
-    """Saves the accuracy data to a CSV file with a unique run number."""
-    os.makedirs(f"data/{pruning_penalty}", exist_ok=True)
-    # Get list of existing CSV files in the specific directory
-    existing_csv_files = [
-        f
-        for f in os.listdir(f"data/{pruning_penalty}")
-        if f.startswith("pruning_accuracies_run") and f.endswith(".csv")
-    ]
-    # Determine the next run number
-    if existing_csv_files:
-        run_numbers = [
-            int(f.split("_run")[1].split(".csv")[0]) for f in existing_csv_files
+def save_accuracy_data(model_accuracies, filename="data/pruning.csv"):
+    """Saves the accuracy data to a CSV file."""
+    os.makedirs("data", exist_ok=True)
+    csv_path = filename
+
+    # Check if file exists to determine if we need to write headers
+    file_exists = os.path.isfile(csv_path)
+
+    with open(csv_path, "a", newline="") as csvfile:
+        fieldnames = [
+            "Active Neurons",
+            "Beta",
+            "Accuracy",
+            "Epoch",
+            "Datapoints",
+            "Pruning Penalty",
+            "Target Neurons",
+            "Learning Rate",
+            "Success",
         ]
-        next_run_number = max(run_numbers) + 1
-    else:
-        next_run_number = 1
-    csv_path = f"data/{pruning_penalty}/pruning_accuracies_run{next_run_number}.csv"
-    with open(csv_path, "w", newline="") as csvfile:
-        fieldnames = ["Active Neurons", "Beta", "Accuracy", "Epoch", "Total Datapoints"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
         for entry in model_accuracies:
             writer.writerow(entry)
-    print(f"Saved accuracy data to {csv_path}")
+
+    # Update the message to show singular/plural based on number of entries
+    entry_count = len(model_accuracies)
+    if entry_count == 1:
+        print(f"Saved 1 result to {csv_path}")
+    else:
+        print(f"Saved {entry_count} results to {csv_path}")
 
 
 def filter_even_digits(dataset):
@@ -473,6 +503,146 @@ def filter_even_digits(dataset):
     return torch.utils.data.Subset(dataset, even_indices)
 
 
+def print_final_summary(all_results, target_neurons_list):
+    """Print a comprehensive summary of all results after all sweeps are complete"""
+    print(f"\n\n{'='*120}")
+    print(f"FINAL SUMMARY OF ALL RESULTS")
+    print(f"{'='*120}")
+
+    # Group results by target neurons
+    results_by_target = {}
+    for target in target_neurons_list:
+        results_by_target[target] = [
+            r for r in all_results if r["Target Neurons"] == target
+        ]
+
+    # Print header
+    print(
+        f"{'Target':<10} {'Beta':<10} {'LR':<10} {'Active':<10} {'Accuracy':<10} {'Epochs':<10} {'Datapoints':<12} {'Success':<8}"
+    )
+    print(f"{'-'*120}")
+
+    # For each target, print the best configuration
+    for target in target_neurons_list:
+        target_results = results_by_target[target]
+
+        # Find the best result for this target
+        best_result = None
+        for result in target_results:
+            if best_result is None:
+                best_result = result
+                continue
+
+            # Update best result if current is better
+            is_better = False
+            if result["Success"] and not best_result["Success"]:
+                is_better = True
+            elif result["Success"] == best_result["Success"]:
+                if result["Accuracy"] > best_result["Accuracy"]:
+                    is_better = True
+                elif (
+                    result["Accuracy"] == best_result["Accuracy"]
+                    and result["Active Neurons"] < best_result["Active Neurons"]
+                ):
+                    is_better = True
+                elif (
+                    result["Accuracy"] == best_result["Accuracy"]
+                    and result["Active Neurons"] == best_result["Active Neurons"]
+                    and result["Datapoints"] < best_result["Datapoints"]
+                ):
+                    is_better = True
+
+            if is_better:
+                best_result = result
+
+        # Print the best result for this target
+        if best_result:
+            print(
+                f"{target:<10} {best_result['Beta']:<10.3e} {best_result['Learning Rate']:<10.3e} "
+                f"{best_result['Active Neurons']:<10} {best_result['Accuracy']:<10.2f} "
+                f"{best_result['Epoch']:<10} {best_result['Datapoints']:<12} "
+                f"{'✓' if best_result['Success'] else '✗'}"
+            )
+
+    print(f"{'-'*120}")
+
+    # Print global statistics
+    successful_configs = [r for r in all_results if r["Success"]]
+    success_rate = len(successful_configs) / len(all_results) if all_results else 0
+
+    print(f"Total configurations tested: {len(all_results)}")
+    print(
+        f"Successful configurations: {len(successful_configs)} ({success_rate*100:.1f}%)"
+    )
+
+    if successful_configs:
+        min_neurons = min(r["Active Neurons"] for r in successful_configs)
+        best_accuracy = max(r["Accuracy"] for r in successful_configs)
+        print(f"Minimum active neurons in a successful configuration: {min_neurons}")
+        print(f"Best accuracy in a successful configuration: {best_accuracy:.2f}%")
+
+    print(f"{'='*120}")
+
+
+def save_checkpoint_data(checkpoint_data, filename="data/pruning_checkpoints.json"):
+    """Saves the intermediate checkpoint data from the best run to a JSON file."""
+    os.makedirs("data", exist_ok=True)
+
+    # Create structure for new run
+    run_id = 1
+
+    # Load existing data if file exists
+    if os.path.exists(filename) and os.path.getsize(filename) > 0:
+        try:
+            with open(filename, "r") as f:
+                all_runs = json.load(f)
+                if all_runs and isinstance(all_runs, list):
+                    run_id = len(all_runs) + 1
+        except json.JSONDecodeError:
+            # If file exists but is not valid JSON, start fresh
+            all_runs = []
+    else:
+        all_runs = []
+
+    # Prepare run data
+    run_data = {
+        "run_id": run_id,
+        "metadata": {
+            "target_neurons": checkpoint_data["metadata"]["target_neurons"],
+            "beta": checkpoint_data["metadata"]["beta"],
+            "lr": checkpoint_data["metadata"]["lr"],
+            "penalty_type": checkpoint_data["metadata"]["penalty_type"],
+            "final_active_neurons": checkpoint_data["metadata"]["final_active_neurons"],
+            "final_accuracy": checkpoint_data["metadata"]["final_accuracy"],
+            "final_datapoints": checkpoint_data["metadata"]["final_datapoints"],
+            "success": checkpoint_data["metadata"]["success"],
+        },
+        "checkpoints": [],
+    }
+
+    # Add checkpoint data
+    for cp in checkpoint_data["checkpoints"]:
+        run_data["checkpoints"].append(
+            {
+                "epoch": cp["epoch"],
+                "segment": cp["segment"],
+                "datapoints": cp["datapoints"],
+                "active_neurons": cp["active_neurons"],
+                "accuracy": cp["accuracy"],
+                "beta": cp["beta"],
+            }
+        )
+
+    # Add to all runs and save
+    all_runs.append(run_data)
+    with open(filename, "w") as f:
+        json.dump(all_runs, f, indent=2)
+
+    print(
+        f"Saved run #{run_id} with {len(checkpoint_data['checkpoints'])} checkpoints to {filename}"
+    )
+
+
 # ===========================
 # Main Execution Loop
 # ===========================
@@ -481,41 +651,43 @@ def filter_even_digits(dataset):
 def main():
     # Hyperparameters
     even_digits_only = True
-    pruning_penalty = "tied_l2_with_lhalf"
+    pruning_penalty = "tied_l2"
     hidden_dim = 1200
-    batch_size = 64
-    num_epochs = 4
-    pruning_threshold = 0.3  # up from 0.2
-    # Beta values for pruning loss -- 0.2 is good
-    # For tied_l2_with_lhalf: approximately 0.5 / average_pruning_loss = 64
-    # For tied_l2: approximately 3 / average_pruning_loss = 3000
-    # For tied_l1: approximately 500
-    # For tied_l1_with_lhalf: approximately 25
-    beta_values = [64]
-    learning_rates = [2e-1]
-    save_model_weights = False
-    model_save_dir = "models"
+    batch_size = 16
+    target_datapoints = 50000
+    pruning_threshold = 0.05
+    num_runs = 10  # Number of runs for each hyperparameter configuration
 
-    # Initialize W&B
-    # wandb.init(
-    #     project="pruning-experiment",
-    #     config={
-    #         "pruning_penalty": pruning_penalty,
-    #         "hidden_dim": hidden_dim,
-    #         "batch_size": batch_size,
-    #         "num_epochs": num_epochs,
-    #         "pruning_threshold": pruning_threshold,
-    #         "beta_values": beta_values,
-    #         "learning_rates": learning_rates,
-    #     },
-    # )
+    # List of target neuron counts to evaluate
+    target_neurons_list = [600, 400, 240, 100, 70]  # add back in 28
+    # target_neurons_list = [35, 25]
 
-    # Load the original model
-    original_model_path = "models/original_model.pth"
-    if not os.path.exists(original_model_path):
-        raise FileNotFoundError(
-            "Please train the original model first using train_original.py"
-        )
+    # Fixed accuracy target
+    target_accuracy = 97.0  # Target accuracy (%)
+    max_datapoints = 50000  # Maximum datapoints to process before giving up
+
+    # Expanded sweep ranges for more thorough exploration
+    beta_values = [1e-3, 3e-3, 4e-3, 5e-3, 6.5e-3, 8e-3]  # add a higher option
+    # beta_values = [1e-3, 5e-3, 1e-2]
+    learning_rates = [
+        4e-4,
+        8e-4,
+        1e-3,
+        2e-3,
+        3e-3,
+        5e-3,
+        8e-3,
+    ]  # add back in 1e-2 to go really low
+    # learning_rates = [5e-3, 8e-3, 1e-2]
+
+    # Focused sweep around 1e-2, 1e-2 (staying within 5e-3 to 5e-1)
+    # 1.5e-2, 8e-3 works rly well for n=100 neurons remaining to chop down a
+    # ton of the network
+    # beta_values = [1.5e-2]
+    # learning_rates = [8e-3]
+
+    # Enable 1/16-epoch checking
+    check_partial_epochs = True
 
     # Data loading & preprocessing
     transform = transforms.ToTensor()
@@ -534,85 +706,398 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    model_accuracies = []
+    # Load the original model
+    original_model_path = "models/original_model.pth"
+    if not os.path.exists(original_model_path):
+        raise FileNotFoundError(
+            "Please train the original model first using train_original.py"
+        )
 
-    for lr in learning_rates:
-        for beta in beta_values:
-            # wandb.config.update(
-            #     {"learning_rate": lr, "beta": beta}, allow_val_change=True
-            # )
-            print(f"Pruning with Beta = {beta} and {pruning_penalty} Penalty")
-            # Initialize prunable model and load original weights
-            model = Net(
-                hidden_dims=[hidden_dim, hidden_dim],
-                pruning_threshold=pruning_threshold,
-            ).to(device)
-            model.load_state_dict(torch.load(original_model_path))
-            original_accuracy = test(model, device, test_loader)
-            print(f"Original Model Accuracy: {original_accuracy:.2f}%")
+    # Store all results
+    all_results = []
+    best_configs_by_target = {}  # To track best config for each target
 
-            # Save initial model statistics before training
-            active_neurons = print_network_statistics(model)
-            model_accuracies.append(
-                {
-                    "Active Neurons": active_neurons,
-                    "Beta": beta,
-                    "Accuracy": original_accuracy,
-                    "Epoch": 0,
-                    "Total Datapoints": 0,
+    # Loop through each target neuron count
+    for target_neurons in target_neurons_list:
+        print(f"\n{'='*80}")
+        print(f"STARTING SWEEP FOR TARGET NEURONS: {target_neurons}")
+        print(f"{'='*80}")
+
+        sweep_results = []  # Store results for this target neuron count
+
+        # Track best hyperparameters and results for this target
+        best_config = {
+            "beta": None,
+            "lr": None,
+            "accuracy": 0.0,
+            "active_neurons": float("inf"),
+            "epochs": 0,
+            "datapoints": float("inf"),
+            "success": False,
+            "target_neurons": target_neurons,
+        }
+
+        # Store checkpoints for the best run
+        best_run_checkpoints = None
+
+        # Print sweep information
+        print(f"Starting hyperparameter sweep with:")
+        print(f"Learning rates: {learning_rates}")
+        print(f"Beta values: {beta_values}")
+        print(f"Target neurons: {target_neurons}, Target accuracy: {target_accuracy}%")
+        print(f"Number of runs per configuration: {num_runs}")
+
+        for lr in learning_rates:
+            for initial_beta in beta_values:
+                print(f"\n{'-'*80}")
+                print(
+                    f"Pruning with Target neurons = {target_neurons}, Beta = {initial_beta}, Learning Rate = {lr}"
+                )
+                print(f"{'-'*80}")
+
+                # Lists to store results across multiple runs
+                run_active_neurons = []
+                run_accuracies = []
+                run_epochs = []
+                run_datapoints = []
+                run_success = []
+
+                # Run each configuration multiple times
+                for run in range(num_runs):
+                    print(f"\nRun {run+1}/{num_runs}")
+                    print(f"{'-'*40}")
+
+                    # Initialize prunable model and load original weights
+                    model = Net(
+                        hidden_dims=[hidden_dim, hidden_dim],
+                        pruning_threshold=pruning_threshold,
+                    ).to(device)
+                    model.load_state_dict(torch.load(original_model_path))
+                    original_accuracy = test(model, device, test_loader)
+                    print(f"Original Model Accuracy: {original_accuracy:.2f}%")
+
+                    # Use Adam optimizer instead of SGD
+                    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+                    # Calculate T_max for scheduler, ensuring it's at least 1
+                    dataset_size = len(train_loader.dataset)
+                    t_max = max(1, target_datapoints // dataset_size)
+                    scheduler = CosineAnnealingLR(optimizer, T_max=t_max, eta_min=lr)
+
+                    total_datapoints = 0
+                    epoch = 0
+
+                    # Current beta value - can change during training
+                    beta = initial_beta
+
+                    # Variables to track our targets
+                    accuracy_target_reached = False
+                    neurons_target_reached = False
+                    total_active_neurons = float("inf")
+                    current_accuracy = 0.0
+
+                    # Track checkpoints for this run
+                    checkpoints = []
+
+                    # Train until we've reached both targets or hit max datapoints
+                    while (
+                        not (accuracy_target_reached and neurons_target_reached)
+                        and total_datapoints < max_datapoints
+                    ):
+                        epoch += 1
+                        scheduler.step(epoch)
+
+                        # Go through each 1/16 of the epoch
+                        for segment in range(16):
+                            if not check_partial_epochs and segment > 0:
+                                continue  # Skip segments 1-15 if not checking partial epochs
+
+                            # Train on this segment of the data
+                            (
+                                beta,  # Use the returned beta value instead of ignoring it
+                                batch_samples,
+                                current_datapoints,
+                                active_neurons,
+                                train_accuracy,
+                            ) = train(
+                                model,
+                                device,
+                                train_loader,
+                                optimizer,
+                                epoch,
+                                beta=beta,
+                                penalty_type=pruning_penalty,
+                                total_datapoints=total_datapoints,
+                                partial_epoch=check_partial_epochs,
+                                segment_index=segment,
+                            )
+
+                            total_datapoints = current_datapoints
+                            total_active_neurons = sum(active_neurons)
+
+                            # Test after this segment
+                            current_accuracy = test(model, device, test_loader)
+
+                            # Save checkpoint data
+                            checkpoints.append(
+                                {
+                                    "epoch": epoch,
+                                    "segment": f"{segment+1}/16",
+                                    "datapoints": total_datapoints,
+                                    "active_neurons": total_active_neurons,
+                                    "accuracy": current_accuracy,
+                                    "beta": beta,
+                                }
+                            )
+
+                            # Check if we've reached the neuron target (and stop pruning if so)
+                            if total_active_neurons <= target_neurons:
+                                neurons_target_reached = True
+                                if beta > 0:
+                                    print(
+                                        f"Reached neuron target of {target_neurons} (current: {total_active_neurons}). Stopping pruning."
+                                    )
+                                    beta = 0.0
+                            else:
+                                neurons_target_reached = False
+
+                            # Check if we've reached the accuracy target
+                            accuracy_target_reached = (
+                                current_accuracy >= target_accuracy
+                            )
+
+                            # Check if we've reached both targets simultaneously
+                            if neurons_target_reached and accuracy_target_reached:
+                                print(
+                                    f"SUCCESS! Reached both targets after segment {segment+1} of epoch {epoch}: "
+                                    f"{total_active_neurons} neurons with {current_accuracy:.2f}% accuracy"
+                                )
+                                break  # Exit the segment loop
+
+                        # If both targets are met, exit the epoch loop too
+                        if neurons_target_reached and accuracy_target_reached:
+                            break
+
+                    # Final status message for this run
+                    success = neurons_target_reached and accuracy_target_reached
+                    if success:
+                        print(
+                            f"Run {run+1}: Successfully reached both targets after {epoch} epochs and {total_datapoints} datapoints"
+                        )
+                    else:
+                        print(
+                            f"Run {run+1}: Failed to reach all targets after {epoch} epochs and {total_datapoints} datapoints"
+                        )
+                        print(
+                            f"Final state: {total_active_neurons} neurons with {current_accuracy:.2f}% accuracy"
+                        )
+                        if neurons_target_reached:
+                            print(f"Neuron target was reached")
+                        if accuracy_target_reached:
+                            print(f"Accuracy target was reached")
+
+                    # Store results for this run
+                    run_active_neurons.append(total_active_neurons)
+                    run_accuracies.append(current_accuracy)
+                    run_epochs.append(epoch)
+                    run_datapoints.append(total_datapoints)
+                    run_success.append(success)
+
+                # Calculate average statistics across all runs
+                avg_active_neurons = sum(run_active_neurons) / num_runs
+                avg_accuracy = sum(run_accuracies) / num_runs
+                avg_epochs = sum(run_epochs) / num_runs
+                avg_datapoints = sum(run_datapoints) / num_runs
+                success_rate = sum(run_success) / num_runs
+
+                # Print summary of all runs
+                print(f"\n{'-'*80}")
+                print(f"SUMMARY OF {num_runs} RUNS FOR Beta={initial_beta}, LR={lr}")
+                print(f"{'-'*80}")
+                print(
+                    f"{'Run':<5} {'Active':<10} {'Accuracy':<10} {'Epochs':<10} {'Datapoints':<12} {'Success':<8}"
+                )
+                print(f"{'-'*80}")
+
+                for i in range(num_runs):
+                    print(
+                        f"{i+1:<5} {run_active_neurons[i]:<10} {run_accuracies[i]:<10.2f} "
+                        f"{run_epochs[i]:<10} {run_datapoints[i]:<12} "
+                        f"{'✓' if run_success[i] else '✗'}"
+                    )
+
+                print(f"{'-'*80}")
+                print(
+                    f"AVG:  {avg_active_neurons:<10.1f} {avg_accuracy:<10.2f} "
+                    f"{avg_epochs:<10.1f} {avg_datapoints:<12.1f} "
+                    f"{success_rate*100:<7.1f}%"
+                )
+                print(f"{'-'*80}")
+
+                # Save average results for this configuration
+                result = {
+                    "Active Neurons": int(avg_active_neurons),
+                    "Beta": initial_beta,
+                    "Accuracy": avg_accuracy,
+                    "Epoch": avg_epochs,
+                    "Datapoints": avg_datapoints,
+                    "Pruning Penalty": pruning_penalty,
+                    "Target Neurons": target_neurons,
+                    "Learning Rate": lr,
+                    "Success": success_rate
+                    >= 0.5,  # Success if at least half the runs succeeded
                 }
+
+                # Add to sweep results
+                sweep_results.append(result)
+
+                # Add to results collection
+                all_results.append(result)
+
+                # Check if this single run is better than the best config's current average
+                is_better_run = False
+                if success and (
+                    not best_config["success"]
+                    or (success and total_datapoints < best_config["datapoints"])
+                    or (
+                        success
+                        and total_datapoints == best_config["datapoints"]
+                        and current_accuracy > best_config["accuracy"]
+                    )
+                ):
+                    is_better_run = True
+                    # Save checkpoints for this run as it's better than previous best run
+                    best_run_checkpoints = {
+                        "metadata": {
+                            "target_neurons": target_neurons,
+                            "beta": initial_beta,
+                            "lr": lr,
+                            "penalty_type": pruning_penalty,
+                            "final_active_neurons": total_active_neurons,
+                            "final_accuracy": current_accuracy,
+                            "final_datapoints": total_datapoints,
+                            "success": success,
+                        },
+                        "checkpoints": checkpoints,
+                    }
+
+                # Check if this is the best configuration for current target
+                is_better = False
+                if result["Success"] and not best_config["success"]:
+                    is_better = True
+                elif result["Success"] == best_config["success"] and result["Success"]:
+                    # If both are successful, prioritize the one with fewer datapoints
+                    if avg_datapoints < best_config["datapoints"]:
+                        is_better = True
+                    # If datapoints are the same, use accuracy as tiebreaker
+                    elif (
+                        avg_datapoints == best_config["datapoints"]
+                        and avg_accuracy > best_config["accuracy"]
+                    ):
+                        is_better = True
+                    # If accuracy is also the same, prefer fewer active neurons
+                    elif (
+                        avg_datapoints == best_config["datapoints"]
+                        and avg_accuracy == best_config["accuracy"]
+                        and avg_active_neurons < best_config["active_neurons"]
+                    ):
+                        is_better = True
+
+                if (
+                    is_better or best_config["beta"] is None
+                ):  # Also update if this is the first run
+                    best_config["beta"] = initial_beta
+                    best_config["lr"] = lr
+                    best_config["accuracy"] = avg_accuracy
+                    best_config["active_neurons"] = avg_active_neurons
+                    best_config["epochs"] = avg_epochs
+                    best_config["datapoints"] = avg_datapoints
+                    best_config["success"] = result["Success"]
+
+        # Store the best configuration for this target neuron count
+        best_configs_by_target[target_neurons] = best_config
+
+        # Save the best configuration for this target neuron count to CSV
+        if best_config["success"]:
+            best_result = {
+                "Active Neurons": int(best_config["active_neurons"]),
+                "Beta": best_config["beta"],
+                "Accuracy": best_config["accuracy"],
+                "Epoch": best_config["epochs"],
+                "Datapoints": best_config["datapoints"],
+                "Pruning Penalty": pruning_penalty,
+                "Target Neurons": target_neurons,
+                "Learning Rate": best_config["lr"],
+                "Success": best_config["success"],
+            }
+            save_accuracy_data([best_result])
+            print(f"\nSaved best configuration to data/pruning.csv")
+        else:
+            print(
+                f"\nNo successful configuration found for target neurons {target_neurons}"
             )
 
-            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-            scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=lr)
+        # Print summary table for this target neuron count
+        print(f"\n{'-'*100}")
+        print(f"SUMMARY FOR TARGET NEURONS: {target_neurons}")
+        print(f"{'-'*100}")
+        print(
+            f"{'Beta':<10} {'LR':<10} {'Active':<10} {'Accuracy':<10} {'Epochs':<10} {'Datapoints':<12} {'Success':<8}"
+        )
+        print(f"{'-'*100}")
 
-            total_datapoints = 0
-            for epoch in range(1, num_epochs + 1):
-                scheduler.step(epoch)
-                beta, total_samples = train(
-                    model,
-                    device,
-                    train_loader,
-                    optimizer,
-                    epoch,
-                    beta=beta,
-                    penalty_type=pruning_penalty,
-                )
-                total_datapoints += total_samples
-                # Save progress every epoch
-                accuracy = test(model, device, test_loader)
-                active_neurons = print_network_statistics(model)
-                model_accuracies.append(
-                    {
-                        "Active Neurons": active_neurons,
-                        "Beta": beta,
-                        "Accuracy": accuracy,
-                        "Epoch": epoch,
-                        "Total Datapoints": total_datapoints,
-                    }
-                )
-                # Log metrics to W&B
-                # wandb.log(
-                #     {
-                #         "epoch": epoch,
-                #         "accuracy": accuracy,
-                #         "active_neurons": active_neurons,
-                #         "beta": beta,
-                #         "total_datapoints": total_datapoints,
-                #     }
-                # )
+        for result in sweep_results:
+            print(
+                f"{result['Beta']:<10.3e} {result['Learning Rate']:<10.3e} "
+                f"{result['Active Neurons']:<10} {result['Accuracy']:<10.2f} "
+                f"{result['Epoch']:<10.1f} {result['Datapoints']:<12.1f} "
+                f"{'✓' if result['Success'] else '✗'}"
+            )
 
-            # Optional: save model weights at the end of training
-            if save_model_weights:
-                os.makedirs(model_save_dir, exist_ok=True)
-                model_filename = f"pruned_model_hidden{hidden_dim}_beta{beta}.pth"
-                model_path = os.path.join(model_save_dir, model_filename)
-                torch.save(model.state_dict(), model_path)
-                print(f"Saved Model weights to {model_path}")
+        print(f"{'-'*100}")
+        print("BEST CONFIGURATION:")
+        if best_config["beta"] is not None:
+            print(f"Beta: {best_config['beta']:.3e}, LR: {best_config['lr']:.3e}")
+            print(
+                f"Active neurons: {best_config['active_neurons']:.1f}, Accuracy: {best_config['accuracy']:.2f}%"
+            )
+            print(
+                f"Epochs: {best_config['epochs']:.1f}, Datapoints: {best_config['datapoints']:.1f}"
+            )
+            print(f"Success: {'✓' if best_config['success'] else '✗'}")
+        else:
+            print("No successful configuration found.")
+        print(f"{'-'*100}")
 
-    # Save accuracy data to CSV
-    save_accuracy_data(model_accuracies, pruning_penalty)
-    # wandb.finish()
+        # Save checkpoint data for the best run if it was successful
+        if best_run_checkpoints is not None and best_config["success"]:
+            save_checkpoint_data(best_run_checkpoints)
+
+    # Print final summary of best configurations for each target
+    print(f"\n{'='*100}")
+    print(f"BEST CONFIGURATIONS SUMMARY")
+    print(f"{'='*100}")
+    print(
+        f"{'Target':<10} {'Beta':<10} {'LR':<10} {'Active':<10} {'Accuracy':<10} {'Datapoints':<12} {'Success':<8}"
+    )
+    print(f"{'-'*100}")
+
+    for target, config in best_configs_by_target.items():
+        if config["beta"] is not None:
+            print(
+                f"{target:<10} {config['beta']:<10.3e} {config['lr']:<10.3e} "
+                f"{config['active_neurons']:<10.1f} {config['accuracy']:<10.2f} "
+                f"{config['datapoints']:<12.1f} {'✓' if config['success'] else '✗'}"
+            )
+        else:
+            print(
+                f"{target:<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<12} ✗"
+            )
+
+    print(f"{'-'*100}")
+
+    # Print final summary table with all results
+    print_final_summary(all_results, target_neurons_list)
 
 
 if __name__ == "__main__":

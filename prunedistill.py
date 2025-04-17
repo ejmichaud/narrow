@@ -8,10 +8,22 @@ This script implements prune-finetuning by:
 
 Usage:
     python prune_finetune.py --model_name <model> --num_train_epochs <epochs> ...
+
+CUDA_LAUNCH_BLOCKING=1 python3 prunedistill.py \
+--model_name NousResearch/Llama-3.2-1B \
+--output_dir "/afs/csail.mit.edu/u/a/asher/narrow/experiments/prunedistill" \
+--regularizer "lhalf_of_l2_of_mlps" \
+--lr 5e-5 \
+--sparsity_lambda 5e-9 \
+--max_steps 100000 \
+--batch_size 8 \
+--use_streaming \
+--save_steps 20000 \
+--do_sft
 """
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 os.environ["WANDB_PROJECT"] = "pruning"
 from os.path import abspath, join, dirname
 
@@ -50,12 +62,17 @@ import torch.nn.utils.prune as prune
 import transformers
 import wandb
 from torch.optim.lr_scheduler import LambdaLR
+import torch.nn.functional as F
+import copy
+from huggingface_hub import HfFolder
+from huggingface_hub.commands.user import login
 
 
 class SparsityTrainer(Trainer):
     """
     Custom Trainer that adds a sparsity-inducing regularization term (e.g., L1)
-    to the loss for causal language modeling.
+    to the loss for causal language modeling, and incorporates a distillation loss
+    based on a frozen teacher model's logits.
     """
 
     def __init__(
@@ -63,11 +80,28 @@ class SparsityTrainer(Trainer):
         *args,
         compute_sparsity_loss: Callable[[nn.Module], torch.Tensor],
         sparsity_lambda: float = 0.0,
+        teacher_model: nn.Module = None,
+        kl_weight: float = 1000.0,
+        temperature: float = 2.0,
+        target_kl: float = 1.3,
+        kl_alpha_adjust_rate: float = 0.05,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.compute_sparsity_loss = compute_sparsity_loss
         self.sparsity_lambda = sparsity_lambda
+        self.teacher_model = teacher_model
+        self.kl_weight = kl_weight
+        self.temperature = temperature
+        self.target_kl = target_kl
+        self.kl_alpha_adjust_rate = kl_alpha_adjust_rate
+        self.weighted_kl_running_avg = None
+        self.ema_beta = 0.9
+        # Simplified KL weight adjustment parameters
+        self.kl_threshold = 0.1  # Maximum allowed unweighted KL
+        self.kl_weight_increase_factor = 1.01  # Very small increase (1%) when needed
+        self.kl_ema = None  # Exponential moving average of unweighted KL
+        self.kl_ema_decay = 0.99  # Decay factor for EMA (higher = more smoothing)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         # Check for updated hyperparameters from wandb
@@ -76,14 +110,171 @@ class SparsityTrainer(Trainer):
                 "sparsity_lambda", self.sparsity_lambda
             )
 
-        data_loss, outputs = super().compute_loss(
-            model, inputs, return_outputs=True, **kwargs
-        )
-        reg_loss = self.sparsity_lambda * self.compute_sparsity_loss(model)
-        total_loss = data_loss + reg_loss
-        self.log({"reg_loss": reg_loss.item() / self.sparsity_lambda})
-        self.log({"reg_loss_weighted": reg_loss.item()})
-        self.log({"data_loss": data_loss.item()})
+        try:
+            # Compute the standard data loss and capture model outputs for logits.
+            data_loss, outputs = super().compute_loss(
+                model, inputs, return_outputs=True, **kwargs
+            )
+        except RuntimeError as e:
+            print(
+                f"Runtime error at step {self.state.global_step if hasattr(self, 'state') else 'unknown'}: {e}"
+            )
+            # Return a fallback loss and outputs
+            dummy_loss = torch.tensor(1.0, device=next(model.parameters()).device)
+            if return_outputs:
+                # Create dummy outputs with the expected structure
+                outputs = type("DummyOutputs", (), {})()
+                outputs.logits = torch.zeros(
+                    (
+                        inputs["input_ids"].shape[0],
+                        inputs["input_ids"].shape[1],
+                        model.config.vocab_size,
+                    ),
+                    device=dummy_loss.device,
+                )
+                outputs.loss = dummy_loss
+                return dummy_loss, outputs
+            return dummy_loss
+
+        # If a teacher model is provided, compute the distillation loss.
+        if self.teacher_model is not None:
+            try:
+                self.teacher_model.eval()
+                with torch.no_grad():
+                    teacher_outputs = self.teacher_model(**inputs)
+                    teacher_logits = teacher_outputs.logits.clone()  # Force a copy
+                student_logits = outputs.logits
+                T = self.temperature
+
+                # Clip logits BEFORE temperature scaling to prevent extreme values
+                max_val = 20.0  # More conservative clipping
+                student_logits = torch.clamp(student_logits, -max_val, max_val)
+                teacher_logits = torch.clamp(teacher_logits, -max_val, max_val)
+
+                # Apply temperature scaling
+                scaled_student_logits = student_logits / T
+                scaled_teacher_logits = teacher_logits / T
+
+                # KL calculation
+                kd_loss = F.kl_div(
+                    F.log_softmax(scaled_student_logits, dim=-1),
+                    F.softmax(scaled_teacher_logits, dim=-1),
+                    reduction="none",
+                    log_target=False,
+                ).sum(-1)
+
+                # Average over non-padding tokens if attention mask is available
+                if "attention_mask" in inputs:
+                    mask = inputs["attention_mask"].float()
+                    kd_loss = (kd_loss * mask).sum() / mask.sum().clamp(min=1.0)
+                else:
+                    kd_loss = kd_loss.mean()
+
+                # Apply temperature scaling factor (T²)
+                kd_loss = kd_loss * (T * T)
+
+                # Get the unweighted KL loss for threshold checking
+                unweighted_kl = kd_loss.item()
+
+                # Update exponential moving average of unweighted KL
+                if self.kl_ema is None:
+                    self.kl_ema = unweighted_kl
+                else:
+                    self.kl_ema = self.kl_ema * self.kl_ema_decay + unweighted_kl * (
+                        1 - self.kl_ema_decay
+                    )
+
+                # Calculate weighted KL loss with current weight
+                weighted_kl_loss = self.kl_weight * kd_loss
+
+                # Track running average of weighted KL loss
+                if self.weighted_kl_running_avg is None:
+                    self.weighted_kl_running_avg = weighted_kl_loss.item()
+                else:
+                    self.weighted_kl_running_avg = (
+                        self.ema_beta * self.weighted_kl_running_avg
+                        + (1 - self.ema_beta) * weighted_kl_loss.item()
+                    )
+
+                # First, adjust KL weight to target the desired weighted KL value
+                kl_ratio = self.weighted_kl_running_avg / self.target_kl
+                self.kl_weight *= 1 - self.kl_alpha_adjust_rate * (kl_ratio - 1)
+
+                # Then, if unweighted KL is too high, increase weight regardless
+                if self.kl_ema > self.kl_threshold:
+                    self.kl_weight *= self.kl_weight_increase_factor
+                    if wandb.run is not None:
+                        wandb.log({"kl_weight_increased": 1.0})
+
+                # Recalculate weighted KL loss with updated weight
+                weighted_kl_loss = self.kl_weight * kd_loss
+
+                # Combine data loss and KL loss
+                combined_loss = data_loss + weighted_kl_loss
+
+                # Create metrics dictionary for logging
+                metrics = {
+                    "unweighted_kl": unweighted_kl,
+                    "kl_ema": self.kl_ema,
+                    "weighted_kl_loss": weighted_kl_loss.item(),
+                    "kl_weight": self.kl_weight,
+                    "data_loss": data_loss.item(),
+                }
+
+                # Log metrics
+                self.log(metrics)
+                if wandb.run is not None:
+                    wandb.log(metrics)
+
+            except Exception as e:
+                print(f"Error in KL calculation: {e}")
+                # Fall back to just using the data loss
+                combined_loss = data_loss
+                if wandb.run is not None:
+                    wandb.log({"kl_error": 1.0})
+        else:
+            raise Exception("No teacher model provided")
+
+        try:
+            # Calculate and add regularization loss
+            reg_loss = self.sparsity_lambda * self.compute_sparsity_loss(model)
+
+            # Check for NaN in regularization loss
+            if torch.isnan(reg_loss):
+                print(
+                    "Warning: NaN detected in regularization loss, replacing with zero"
+                )
+                reg_loss = torch.tensor(0.0, device=combined_loss.device)
+
+            total_loss = combined_loss + reg_loss
+        except Exception as e:
+            print(f"Error in regularization calculation: {e}")
+            total_loss = combined_loss
+            reg_loss = torch.tensor(0.0, device=combined_loss.device)
+
+        # Final NaN check for total loss
+        if torch.isnan(total_loss):
+            print("Warning: NaN detected in total loss, falling back to data loss only")
+            total_loss = data_loss
+
+        # Final metrics to log
+        final_metrics = {
+            "reg_loss": (
+                reg_loss.item() / self.sparsity_lambda
+                if self.sparsity_lambda != 0
+                else 0.0
+            ),
+            "reg_loss_weighted": reg_loss.item(),
+            "combined_loss": combined_loss.item(),
+            "total_loss": total_loss.item(),
+            "sparsity_lambda": self.sparsity_lambda,
+        }
+
+        # Log to both trainer and wandb
+        self.log(final_metrics)
+        if wandb.run is not None:
+            wandb.log(final_metrics)
+
         return (total_loss, outputs) if return_outputs else total_loss
 
 
@@ -519,16 +710,35 @@ class SparsityLambdaScheduler(TrainerCallback):
 
 
 class LearningRateDecayCallback(TrainerCallback):
-    def __init__(self, start_lr: float, final_lr: float, total_steps: int):
+    def __init__(
+        self,
+        start_lr: float,
+        final_lr: float,
+        total_steps: int,
+        warmup_steps: int = 1000,
+    ):
         self.start_lr = start_lr
         self.final_lr = final_lr
         self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
         self.trainer = None  # Will be set after the callback is added to the trainer
 
     def on_step_end(self, args, state, control, **kwargs):
-        # Compute progress and update the learning rate linearly.
-        progress = min(state.global_step / self.total_steps, 1.0)
-        computed_lr = self.start_lr * (1 - progress) + self.final_lr * progress
+        # First handle warmup phase
+        if state.global_step < self.warmup_steps:
+            # Linear warmup from 1% of start_lr to full start_lr
+            warmup_progress = state.global_step / self.warmup_steps
+            computed_lr = (
+                self.start_lr * 0.01 + (self.start_lr * 0.99) * warmup_progress
+            )
+        else:
+            # After warmup, compute progress and update the learning rate linearly
+            progress = min(
+                (state.global_step - self.warmup_steps)
+                / (self.total_steps - self.warmup_steps),
+                1.0,
+            )
+            computed_lr = self.start_lr * (1 - progress) + self.final_lr * progress
 
         # If wandb is running, allow UI override of the computed learning rate
         if wandb.run is not None:
@@ -628,7 +838,7 @@ def parse_args():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=10000,
+        default=100000,
         help="Total number of training steps to run.",
     )
     parser.add_argument(
@@ -653,7 +863,7 @@ def parse_args():
         "--logging_steps", type=int, default=5, help="Log every N steps."
     )
     parser.add_argument(
-        "--save_steps", type=int, default=10000, help="Save checkpoint every N steps."
+        "--save_steps", type=int, default=100000, help="Save checkpoint every N steps."
     )
     parser.add_argument(
         "--accumulations",
@@ -664,6 +874,16 @@ def parse_args():
     parser.add_argument(
         "--use_streaming", action="store_true", help="Use streaming dataset if set."
     )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=1000,
+        help="Number of warmup steps for learning rate scheduler.",
+    )
+    parser.add_argument(
+        "--do_sft", action="store_true", help="Run SFT before pruning-distillation."
+    )
+
     args = parser.parse_args()
 
     # Add debug info and better error handling for directory creation
@@ -731,16 +951,109 @@ def get_exponential_warmup_scheduler(optimizer, num_warmup_steps, base_lr):
     return LambdaLR(optimizer, lr_lambda)
 
 
+def run_sft(model, tokenizer, train_dataset, val_dataset, args):
+    """
+    Performs Supervised Fine-Tuning (SFT) on the model to adapt it to the target distribution
+    before pruning and distillation. For SFT, we use a gentler learning rate scheduler
+    with an increased warmup period so that the learning rate ramps up very gradually,
+    which helps prevent an initial loss spike. The SFT model is not saved to disk.
+    """
+    print("\n=== Starting Supervised Fine-Tuning (SFT) Phase ===\n")
+
+    # Updated SFT hyperparameters for smoother loss:
+    sft_epochs = 1
+    sft_lr = 1e-6  # Lowered learning rate for gentler updates
+    sft_batch_size = 8
+    sft_warmup_steps = 2000  # Increased warmup steps for a more gradual ramp-up
+    sft_max_steps = 10000  # HERE
+
+    # Data collator for causal LM
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+    # SFT output directory (used for logging; we won't save the final model)
+    sft_output_dir = os.path.join(args.output_dir, "sft_model")
+    os.makedirs(sft_output_dir, exist_ok=True)
+
+    sft_training_args = TrainingArguments(
+        output_dir=sft_output_dir,
+        num_train_epochs=sft_epochs,
+        max_steps=sft_max_steps,  # Explicit max_steps required for streaming datasets
+        per_device_train_batch_size=sft_batch_size,
+        per_device_eval_batch_size=sft_batch_size,
+        logging_dir=os.path.join(sft_output_dir, "logs"),
+        logging_steps=args.logging_steps,
+        evaluation_strategy="steps" if val_dataset else "no",
+        eval_steps=args.eval_steps,
+        save_strategy="no",  # Disable model saving during SFT
+        optim="adamw_torch_fused",
+        bf16=True,
+        save_total_limit=2,
+        learning_rate=sft_lr,
+        warmup_steps=sft_warmup_steps,
+        lr_scheduler_type="constant_with_warmup",  # Gentle ramp-up
+        load_best_model_at_end=False,
+        save_only_model=True,
+        max_grad_norm=1.0,
+        hub_token=None,
+        save_safetensors=True,
+    )
+
+    # Update wandb config for SFT and allow overwriting values
+    sft_config = {
+        "phase": "sft",
+        "learning_rate": sft_lr,
+        "batch_size": sft_batch_size,
+        "epochs": sft_epochs,
+    }
+    wandb.config.update(sft_config, allow_val_change=True)
+
+    # Initialize a Trainer (without any regularization) for SFT
+    sft_trainer = Trainer(
+        model=model,
+        args=sft_training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=data_collator,
+        tokenizer=tokenizer,
+    )
+
+    # Run SFT
+    sft_trainer.train()
+
+    print("SFT phase completed. Using the fine-tuned model for pruning-distillation.\n")
+    # Return the fine-tuned model directly without saving it to disk.
+    return sft_trainer.model
+
+
 def main():
     args = parse_args()
     print("args: ", args)
+
+    # Check and handle Hugging Face login
+    token = HfFolder.get_token()
+    if token is None:
+        print(
+            "No Hugging Face token found. Please enter your token (from https://huggingface.co/settings/tokens):"
+        )
+        token = input().strip()
+        login(token=token)
+        if not HfFolder.get_token():
+            raise ValueError(
+                "Failed to login to Hugging Face. Please check your token and try again."
+            )
+    print("Successfully authenticated with Hugging Face")
 
     # Initialize wandb with config
     wandb_config = {
         "learning_rate": args.lr,
         "sparsity_lambda": args.sparsity_lambda,
+        "warmup_steps": args.warmup_steps,
     }
     wandb.init(config=wandb_config, allow_val_change=True)
+
+    # Generate a model ID based on wandb run name and config
+    hub_model_id = f"pruned-{args.model_name.split('/')[-1]}-{wandb.run.name}"
+    hub_model_id = hub_model_id.replace("/", "_").lower()
 
     # Load or stream dataset
     if args.use_streaming:
@@ -752,17 +1065,8 @@ def main():
             split="train",
             cache_dir="../.cache/huggingface/datasets",
         )
-        # Streaming datasets typically don't have "train" / "validation" splits
-        # or random access. One might need to do something like:
-        #   train_dataset = dataset.take(100000)
-        #   val_dataset   = dataset.skip(100000).take(20000)
-        # Adjust accordingly for your use case.
-        # For simplicity, let's pretend we just do a single dataset:
-        # train_dataset = dataset.take(1000)
         train_dataset = dataset
         val_dataset = None
-
-        # For streaming dataset, create attribution dataset from a new stream
         attribution_dataset = load_dataset(
             "codeparrot/github-code",
             streaming=True,
@@ -774,15 +1078,13 @@ def main():
         print("Loading non-streaming dataset")
         dataset = load_dataset(
             "codeparrot/github-code", languages=["Python"], split="train"
-        )  # For demonstration
-        # Create a small validation split just as an example
+        )
         train_dataset = dataset.select(range(0, int(0.8 * len(dataset))))
         val_dataset = dataset.select(range(int(0.8 * len(dataset)), len(dataset)))
         attribution_dataset = dataset.select(range(1000))
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token_id is None:
-        # Ensure we have a pad token, especially important for GPT-2-like models
         tokenizer.pad_token = tokenizer.eos_token
 
     tokenized_train = prepare_dataset(train_dataset, tokenizer, args.max_length)
@@ -791,13 +1093,48 @@ def main():
         if val_dataset
         else None
     )
+
     print("loading model")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.float32,  # or float16 if your GPU supports it
-        device_map="auto",  # could also specify device like "cuda:0"
+        torch_dtype=torch.float32,
+        device_map="auto",
     )
     print("finished loading model")
+
+    # Run SFT if enabled
+    if args.do_sft:
+        model = run_sft(model, tokenizer, tokenized_train, tokenized_val, args)
+
+    # Reinitialize wandb for the pruning-distillation phase
+    wandb.config.update({"phase": "pruning-distillation"}, allow_val_change=True)
+
+    # Create a teacher model from the fine-tuned model
+    if args.do_sft:
+        # Option 1: Create a more explicit deep copy
+        teacher_model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            torch_dtype=torch.float32,
+            device_map="auto",
+        )
+        # Load the SFT model state dict into the teacher
+        teacher_model.load_state_dict(model.state_dict())
+
+        # Option 2: Alternative approach - save and reload the model
+        # temp_path = os.path.join(args.output_dir, "temp_sft_model")
+        # model.save_pretrained(temp_path)
+        # teacher_model = AutoModelForCausalLM.from_pretrained(
+        #     temp_path,
+        #     torch_dtype=torch.float32,
+        #     device_map="auto",
+        # )
+    else:
+        teacher_model = copy.deepcopy(model)
+
+    teacher_model.eval()
+    for param in teacher_model.parameters():
+        param.requires_grad = False
+
     # Data collator for causal LM
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
@@ -814,23 +1151,24 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
-        optim="adamw_torch_fused",  # FASTER OPTIMIZER
-        bf16=True,  # BF16
-        gradient_checkpointing=False,  # Potential memory savings
-        save_total_limit=2,  # EDITS: Only keep the latest two checkpoints
+        optim="adamw_torch_fused",
+        bf16=True,
+        gradient_checkpointing=False,
+        save_total_limit=2,
         learning_rate=args.lr,
-        warmup_steps=0,  # Disable built-in warmup (and decay) to allow our callback to control lr.
-        lr_scheduler_type="constant",  # Use a constant scheduler so our LR callback can override it.
-        load_best_model_at_end=False,  # Prevent saving optimizer state
-        save_only_model=True,  # If using newer transformers versions
+        warmup_steps=0,
+        lr_scheduler_type="constant",
+        load_best_model_at_end=False,
+        save_only_model=True,
         max_grad_norm=1.0,
-        hub_token=None,  # Disable model hub interactions
-        save_safetensors=True,  # Use safetensors format which is more robust
+        save_safetensors=True,
+        # Add Hub-specific arguments
+        push_to_hub=True,
+        hub_model_id=hub_model_id,
+        hub_strategy="every_save",
     )
-    # EDITS: Disable saving optimizer state to save space.
     training_args.save_optimizer_state = False
 
-    # Create dataloader for attribution
     attribution_tokenized = prepare_dataset(
         attribution_dataset, tokenizer, args.max_length
     )
@@ -849,32 +1187,62 @@ def main():
         tokenizer=tokenizer,
         compute_sparsity_loss=REGULARIZERS[args.regularizer],
         sparsity_lambda=args.sparsity_lambda,
-        # callbacks=[
-        #     SparsityLambdaScheduler(trainer=None, decay_step=6000, decay_factor=0.13),
-        #     LearningRateDecayCallback(
-        #         start_lr=args.lr,
-        #         final_lr=args.final_lr,
-        #         total_steps=training_args.max_steps,
-        #     ),
-        # ],
+        teacher_model=teacher_model,
+        kl_weight=wandb.config.get("distillation_alpha", 100.0),
+        temperature=2.0,
+        target_kl=wandb.config.get("target_kl", 1.0),
+        kl_alpha_adjust_rate=wandb.config.get("kl_alpha_adjust_rate", 0.01),
+        callbacks=[
+            LearningRateDecayCallback(
+                start_lr=args.lr,
+                final_lr=args.final_lr,
+                total_steps=training_args.max_steps,
+                warmup_steps=args.warmup_steps,
+            ),
+        ],
     )
 
-    # After initializing the trainer, update the callback's trainer reference.
     for callback in trainer.callback_handler.callbacks:
         if isinstance(callback, (SparsityLambdaScheduler, LearningRateDecayCallback)):
             callback.trainer = trainer
 
-    # Add error handling around model saving
     def save_checkpoint():
         try:
+            print(f"Pushing final model to the Hub as {hub_model_id}")
+
+            # Create a model card with training details
+            model_card = f"""
+            # Pruned {args.model_name}
+            
+            This model was created by applying pruning-distillation to {args.model_name}.
+            
+            ## Training Parameters
+            - Regularizer: {args.regularizer}
+            - Sparsity Lambda: {args.sparsity_lambda}
+            - Learning Rate: {args.lr}
+            - Batch Size: {args.batch_size}
+            - Training Steps: {args.max_steps}
+            
+            ## Wandb Run
+            - Run Name: {wandb.run.name}
+            - Run URL: {wandb.run.url}
+            """
+
+            # Save model card
+            with open(os.path.join(args.output_dir, "README.md"), "w") as f:
+                f.write(model_card)
+
+            trainer.push_to_hub(
+                repo_id=hub_model_id,
+                commit_message="Final pruned model",
+            )
+            print("Successfully pushed model to the Hub")
+        except Exception as e:
+            print(f"Error pushing to Hub: {e}")
+            print("Falling back to local save...")
             checkpoint_dir = os.path.join(args.output_dir, "final_model")
-            print(f"Attempting to save model to: {checkpoint_dir}")
             trainer.save_model(checkpoint_dir)
             tokenizer.save_pretrained(checkpoint_dir)
-            print("Successfully saved model and tokenizer")
-        except Exception as e:
-            print(f"Error saving checkpoint: {e}")
-            print("Try running with a different output directory or check permissions")
             return False
         return True
 

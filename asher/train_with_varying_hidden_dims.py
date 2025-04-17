@@ -1,4 +1,6 @@
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import csv
 import torch
 import torch.nn as nn
@@ -28,11 +30,22 @@ class Net(nn.Module):
         return x
 
 
-def train(model, device, train_loader, optimizer, epoch):
+def train(model, device, train_loader, optimizer, epoch, segment, datapoints_seen):
     model.train()
     correct = 0
     total_samples = 0
-    for data, target in train_loader:
+
+    # Calculate start and end indices for this segment of the epoch
+    total_batches = len(train_loader)
+    segment_size = total_batches // 8
+    start_idx = segment * segment_size
+    end_idx = (segment + 1) * segment_size if segment < 7 else total_batches
+
+    for i, (data, target) in enumerate(train_loader):
+        # Skip batches not in this segment
+        if i < start_idx or i >= end_idx:
+            continue
+
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
@@ -42,12 +55,15 @@ def train(model, device, train_loader, optimizer, epoch):
         pred = output.argmax(dim=1, keepdim=True)
         correct += pred.eq(target.view_as(pred)).sum().item()
         total_samples += data.size(0)
-    accuracy = 100.0 * correct / total_samples
-    print(f"Epoch {epoch}: Training accuracy: {accuracy:.2f}%")
-    return accuracy
+        datapoints_seen += data.size(0)
+
+    accuracy = 100.0 * correct / total_samples if total_samples > 0 else 0
+    epoch_str = f"{epoch}.{segment+1}"
+    print(f"Epoch {epoch_str}: Training accuracy: {accuracy:.2f}%")
+    return accuracy, datapoints_seen
 
 
-def test(model, device, test_loader, epoch):
+def test(model, device, test_loader, epoch, segment):
     model.eval()
     correct = 0
     total_samples = 0
@@ -59,14 +75,15 @@ def test(model, device, test_loader, epoch):
             correct += pred.eq(target.view_as(pred)).sum().item()
             total_samples += data.size(0)
     accuracy = 100.0 * correct / total_samples
-    print(f"Epoch {epoch}: Test accuracy: {accuracy:.2f}%")
+    epoch_str = f"{epoch}.{segment+1}"
+    print(f"Epoch {epoch_str}: Test accuracy: {accuracy:.2f}%")
     return accuracy
 
 
 def save_training_data(data, filename):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", newline="") as csvfile:
-        fieldnames = ["Epoch", "Neurons Remaining", "Accuracy"]
+        fieldnames = ["Epoch", "Datapoints", "Neurons Remaining", "Accuracy"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for entry in data:
@@ -98,33 +115,96 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-    hidden_dims_list = [[5], [10], [20], [80], [200], [800], [1200]]
+    hidden_dims_list = [
+        [15],
+        [25],
+        [50],
+        [80],
+        [140],
+        [200],
+        [300],
+        [400],
+        [500],
+        [600],
+        [700],
+        [800],
+        [900],
+        [1000],
+        [1100],
+        [1200],
+    ]
     num_epochs = 20
-    learning_rate = 0.01
+    num_runs = 50  # Number of networks to train for each hidden dimension
 
     all_training_data = []
 
     for hidden_dims in hidden_dims_list:
-        model = Net(hidden_dim=hidden_dims[0]).to(device)
-        optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
-        scheduler = CosineAnnealingLR(
-            optimizer, T_max=num_epochs, eta_min=learning_rate
-        )
+        print(f"Training for hidden dimension: {hidden_dims[0]}")
 
-        for epoch in range(1, num_epochs + 1):
-            scheduler.step(epoch)
-            train_accuracy = train(model, device, train_loader, optimizer, epoch)
-            test_accuracy = test(model, device, test_loader, epoch)
+        # Lists to collect statistics across runs
+        run_epochs = []
+        run_datapoints = []
+        run_neurons = []
+        run_accuracies = []
+
+        for run in range(num_runs):
+            print(f"Run {run+1}/{num_runs}")
+            model = Net(hidden_dim=hidden_dims[0]).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+
+            datapoints_seen = 0
+            reached_target = False
+            final_test_accuracy = 0
+            final_epoch = 0
+            final_segment = 0
+
+            for epoch in range(1, num_epochs + 1):
+                for segment in range(8):  # 0-7 for eight segments per epoch
+                    train_accuracy, datapoints_seen = train(
+                        model,
+                        device,
+                        train_loader,
+                        optimizer,
+                        epoch,
+                        segment,
+                        datapoints_seen,
+                    )
+                    test_accuracy = test(model, device, test_loader, epoch, segment)
+
+                    final_test_accuracy = test_accuracy
+                    final_epoch = epoch
+                    final_segment = segment
+
+                    if test_accuracy >= 97.0:
+                        reached_target = True
+                        break
+
+                if reached_target:
+                    break
+
+            # Collect statistics for this run
             neurons_remaining = sum(
                 [layer.weight.shape[0] for layer in model.fc_layers]
             )
-            if test_accuracy >= 97.0:
-                break
+
+            run_epochs.append(f"{final_epoch}.{final_segment+1}")
+            run_datapoints.append(datapoints_seen)
+            run_neurons.append(neurons_remaining)
+            run_accuracies.append(final_test_accuracy)
+
+        # Calculate averages across all runs
+        avg_epoch = sum([float(e) for e in run_epochs]) / num_runs
+        avg_datapoints = sum(run_datapoints) / num_runs
+        avg_neurons = sum(run_neurons) / num_runs
+        avg_accuracy = sum(run_accuracies) / num_runs
+
+        # Record the average data for this hidden dimension
         all_training_data.append(
             {
-                "Epoch": epoch,
-                "Neurons Remaining": neurons_remaining,
-                "Accuracy": test_accuracy,
+                "Epoch": f"{avg_epoch:.2f}",
+                "Datapoints": int(avg_datapoints),
+                "Neurons Remaining": int(avg_neurons),
+                "Accuracy": avg_accuracy,
             }
         )
 

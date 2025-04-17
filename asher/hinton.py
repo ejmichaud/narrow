@@ -14,23 +14,31 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 batch_size = 64
 alpha = 0.1  # alpha is the weight for the cross-entropy loss, 1 - alpha is the weight for the distillation loss
-temperatures = [10]  # 1, 5, 10
-num_epochs = 5
+temperatures = [20]  # 1, 5, 10
+num_epochs = 8
 hidden_dim_teacher = 1200  # Hidden dimension for the teacher model
 
 # Hidden dimensions to test for students
 hidden_dims = [
-    9,
-    11,
-    14,
-    22,
+    15,
+    25,
+    35,
     45,
-    60,
-    82,
-    205,
-    805,
+    50,
+    65,
+    80,
+    100,
+    120,
+    140,
+    200,
+    300,
+    400,
+    500,
+    600,
+    800,
+    1000,
     1200,
-]  # [10, 12, 22, 82, 205, 805, 1200]
+]
 
 # Create transform for images into tensors
 transform = transforms.ToTensor()
@@ -137,6 +145,7 @@ def train_teacher(model, device, train_loader, optimizer, epoch):
     total_loss = 0
     correct = 0
     total_samples = 0
+    datapoints_processed = epoch * len(train_loader.dataset)
 
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -154,8 +163,8 @@ def train_teacher(model, device, train_loader, optimizer, epoch):
     total_loss /= total_samples
     accuracy = 100.0 * correct / total_samples
     print(
-        "Teacher Train Epoch: {} \tLoss: {:.6f}\tAccuracy: {:.2f}%".format(
-            epoch, total_loss, accuracy
+        "Teacher Train Epoch: {} \tDatapoints: {} \tLoss: {:.6f}\tAccuracy: {:.2f}%".format(
+            epoch, datapoints_processed, total_loss, accuracy
         )
     )
     return accuracy
@@ -178,54 +187,103 @@ def test(model, device, test_loader, model_name="Model"):
     return accuracy
 
 
-# Training function for student model
-def train_student(
-    student_model, teacher_model, device, train_loader, optimizer, epoch, T, alpha
+# Training function for student model with more frequent evaluation
+def train_student_with_early_stopping(
+    student_model,
+    teacher_model,
+    device,
+    train_loader,
+    test_loader,
+    optimizer,
+    T,
+    alpha,
+    target_accuracy=97.0,
 ):
     student_model.train()
     teacher_model.eval()
-    total_loss = 0
-    correct = 0
-    total_samples = 0
 
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
+    total_datapoints = 0
+    check_interval = (
+        len(train_loader.dataset) // 8
+    )  # Check accuracy every eighth of an epoch (changed from 4 to 8)
 
-        # Compute student output
-        student_logits = student_model(data)
-        # Compute teacher output
-        with torch.no_grad():
-            teacher_logits = teacher_model(data)
+    # Track batches for reporting
+    batch_loss_sum = 0
+    batch_correct = 0
+    batch_total = 0
 
-        # Compute + combine losses
-        loss_ce = F.cross_entropy(student_logits, target)
-        loss_kd = distillation_loss(student_logits, teacher_logits, T)
-        loss = alpha * loss_ce + (1.0 - alpha) * loss_kd
+    while True:
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
 
-        loss.backward()
-        optimizer.step()
+            # Compute student output
+            student_logits = student_model(data)
+            # Compute teacher output
+            with torch.no_grad():
+                teacher_logits = teacher_model(data)
 
-        total_loss += loss.item() * data.size(0)
-        pred = student_logits.argmax(dim=1, keepdim=True)
-        correct += pred.eq(target.view_as(pred)).sum().item()
-        total_samples += data.size(0)
+            # Compute + combine losses
+            loss_ce = F.cross_entropy(student_logits, target)
+            loss_kd = distillation_loss(student_logits, teacher_logits, T)
+            loss = alpha * loss_ce + (1.0 - alpha) * loss_kd
 
-    total_loss /= total_samples
-    accuracy = 100.0 * correct / total_samples
-    print(
-        "Student Train Epoch: {} \tLoss: {:.6f}\tAccuracy: {:.2f}%".format(
-            epoch, total_loss, accuracy
-        )
-    )
-    return accuracy
+            loss.backward()
+            optimizer.step()
+
+            # Update batch statistics
+            batch_loss_sum += loss.item() * data.size(0)
+            pred = student_logits.argmax(dim=1, keepdim=True)
+            batch_correct += pred.eq(target.view_as(pred)).sum().item()
+            batch_total += data.size(0)
+
+            # Update total datapoints processed
+            total_datapoints += data.size(0)
+
+            # Check accuracy periodically
+            if total_datapoints % check_interval < batch_size:
+                # Report training progress
+                if batch_total > 0:
+                    batch_loss = batch_loss_sum / batch_total
+                    batch_accuracy = 100.0 * batch_correct / batch_total
+                    print(
+                        f"Student Training: Datapoints: {total_datapoints} \tLoss: {batch_loss:.6f}\tAccuracy: {batch_accuracy:.2f}%"
+                    )
+                    # Reset batch statistics
+                    batch_loss_sum = 0
+                    batch_correct = 0
+                    batch_total = 0
+
+                # Test current model
+                student_acc = test(
+                    student_model,
+                    device,
+                    test_loader,
+                    model_name=f"Student (T={T})",
+                )
+
+                # Check if target accuracy reached
+                if student_acc >= target_accuracy:
+                    return total_datapoints, student_acc
+
+                # Set back to training mode
+                student_model.train()
+
+    # This should not be reached with the infinite loop, but just in case
+    return total_datapoints, student_acc
 
 
 # Save training data
 def save_training_data(data, filename):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", newline="") as csvfile:
-        fieldnames = ["Epoch", "Neurons Remaining", "Accuracy", "Temperature"]
+        fieldnames = [
+            "Epoch",
+            "Datapoints",
+            "Neurons Remaining",
+            "Accuracy",
+            "Temperature",
+        ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for entry in data:
@@ -235,10 +293,11 @@ def save_training_data(data, filename):
 # Main script
 def main():
     student_results = []
+    num_runs = 50  # Number of training runs for each configuration
 
     # Train the teacher model
     teacher_model = TeacherNet(hidden_dim_teacher).to(device)
-    optimizer_teacher = optim.SGD(teacher_model.parameters(), lr=0.01, momentum=0.9)
+    optimizer_teacher = optim.SGD(teacher_model.parameters(), lr=0.05, momentum=0.9)
     print("Training Teacher Model...")
     for epoch in range(1, num_epochs + 1):
         train_teacher(
@@ -249,44 +308,52 @@ def main():
     for hidden_dim in hidden_dims:
         for T in temperatures:
             print(
-                f"\nTraining student with hidden dimension: {hidden_dim} and temperature T={T}"
-            )
-            student_model = StudentNet(hidden_dim).to(device)
-            optimizer_student = optim.SGD(
-                student_model.parameters(), lr=0.01, momentum=0.9
+                f"\nTraining {num_runs} students with hidden dimension: {hidden_dim} and temperature T={T}"
             )
 
-            epoch = 1
-            while True:  # Loop indefinitely
-                train_student(
+            # Lists to store metrics for averaging
+            run_datapoints = []
+            run_accuracies = []
+
+            for run in range(1, num_runs + 1):
+                print(f"Run {run}/{num_runs}")
+                student_model = StudentNet(hidden_dim).to(device)
+                optimizer_student = optim.SGD(
+                    student_model.parameters(), lr=0.01, momentum=0.9
+                )
+
+                # Train with early stopping
+                datapoints_processed, student_acc = train_student_with_early_stopping(
                     student_model,
                     teacher_model,
                     device,
                     student_train_loader,
+                    student_test_loader,
                     optimizer_student,
-                    epoch,
                     T,
                     alpha,
+                    target_accuracy=97.0,
                 )
 
-                student_acc = test(
-                    student_model,
-                    device,
-                    student_test_loader,
-                    model_name=f"Student (T={T})",
-                )
+                # Store metrics for this run
+                run_datapoints.append(datapoints_processed)
+                run_accuracies.append(student_acc)
 
-                if student_acc >= 97.0:  # Stop if accuracy reaches 97%
-                    break
+            # Calculate averages
+            avg_datapoints = sum(run_datapoints) / num_runs
+            avg_accuracy = sum(run_accuracies) / num_runs
 
-                epoch += 1  # Increment epoch
+            print(f"Average results for hidden_dim={hidden_dim}, T={T}:")
+            print(f"  Datapoints: {avg_datapoints:.2f}")
+            print(f"  Accuracy: {avg_accuracy:.2f}%")
 
-            # Append results after training finishes for the student model
+            # Append averaged results
             student_results.append(
                 {
-                    "Epoch": epoch,
+                    "Epoch": avg_datapoints / len(student_train_loader.dataset),
+                    "Datapoints": avg_datapoints,
                     "Neurons Remaining": 2 * hidden_dim,
-                    "Accuracy": student_acc,
+                    "Accuracy": avg_accuracy,
                     "Temperature": T,
                 }
             )

@@ -11,7 +11,7 @@ Usage:
 """
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
 os.environ["WANDB_PROJECT"] = "pruning"
 from os.path import abspath, join, dirname
 
