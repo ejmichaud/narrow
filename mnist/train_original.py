@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import os
+from collections import defaultdict
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
@@ -87,6 +88,106 @@ def test(model, device, test_loader, total_datapoints):
         f"Test set: Total Datapoints: {total_datapoints}, Accuracy: {correct}/{total_samples} ({accuracy:.2f}%)"
     )
     return accuracy
+
+
+def apply_pruning(model, score_tuples, target_neurons):
+    """
+    Apply pruning based on attribution scores to reach target number of neurons,
+    distributing pruning evenly across layers.
+
+    Args:
+        model: The neural network model
+        score_tuples: List of (layer_idx, neuron_idx, score) tuples
+        target_neurons: Target number of active neurons to keep
+
+    Returns:
+        Dictionary containing pruning statistics
+    """
+    # Calculate current active neurons
+    layer_active_counts = [int(mask.sum().item()) for mask in model.masks]
+    total_active = sum(layer_active_counts)
+
+    # Calculate how many neurons to prune
+    neurons_to_prune = total_active - target_neurons
+    if neurons_to_prune <= 0:
+        print(f"Already at or below target: {total_active} <= {target_neurons}")
+        return {
+            "total_active_before": total_active,
+            "total_active_after": total_active,
+            "neurons_pruned": 0,
+        }
+
+    print(f"Pruning {neurons_to_prune} neurons to reach target of {target_neurons}")
+
+    # Group score tuples by layer
+    layer_scores = {}
+    for layer_idx, neuron_idx, score in score_tuples:
+        if layer_idx not in layer_scores:
+            layer_scores[layer_idx] = []
+        layer_scores[layer_idx].append((neuron_idx, score))
+
+    # Sort each layer's neurons by score (ascending)
+    for layer_idx in layer_scores:
+        layer_scores[layer_idx].sort(key=lambda x: x[1])
+
+    # Calculate pruning ratios per layer based on current layer sizes
+    # We want to prune approximately the same percentage from each layer
+    pruning_ratio = neurons_to_prune / total_active
+    neurons_to_prune_per_layer = {
+        i: int(layer_active_counts[i] * pruning_ratio)
+        for i in range(len(layer_active_counts))
+    }
+
+    # Adjust to ensure we prune exactly the desired number
+    total_to_prune = sum(neurons_to_prune_per_layer.values())
+    if total_to_prune < neurons_to_prune:
+        # Distribute remaining neurons to prune across layers
+        remaining = neurons_to_prune - total_to_prune
+        layer_indices = sorted(
+            range(len(layer_active_counts)),
+            key=lambda i: layer_active_counts[i],
+            reverse=True,
+        )
+        for i in range(remaining):
+            # Add one more neuron to prune to each layer, starting with the largest
+            layer_idx = layer_indices[i % len(layer_indices)]
+            neurons_to_prune_per_layer[layer_idx] += 1
+
+    # Create a dictionary to collect neuron indices to prune per layer
+    indices_to_prune = defaultdict(list)
+
+    # Add neurons to prune from each layer
+    for layer_idx, layer_tuples in layer_scores.items():
+        # Limit to the pre-calculated number for this layer
+        to_prune_count = min(
+            neurons_to_prune_per_layer.get(layer_idx, 0), len(layer_tuples)
+        )
+
+        # Safety check: ensure we leave at least 10% of neurons in each layer
+        min_to_keep = max(1, int(layer_active_counts[layer_idx] * 0.1))
+        max_to_prune = layer_active_counts[layer_idx] - min_to_keep
+        to_prune_count = min(to_prune_count, max_to_prune)
+
+        # Add the lowest scoring neurons to the pruning list
+        for i in range(to_prune_count):
+            neuron_idx, _ = layer_tuples[i]
+            indices_to_prune[layer_idx].append(neuron_idx)
+
+    # Apply pruning
+    active_neurons = model.update_masks(indices_to_prune)
+    total_active_after = sum(active_neurons)
+    total_pruned = sum(len(indices) for indices in indices_to_prune.values())
+
+    # Print statistics
+    print(f"Active neurons per layer after pruning: {active_neurons}")
+    print(f"Total active neurons: {total_active_after}")
+
+    return {
+        "total_active_before": total_active,
+        "total_active_after": total_active_after,
+        "neurons_pruned": total_pruned,
+        "neurons_pruned_per_layer": {k: len(v) for k, v in indices_to_prune.items()},
+    }
 
 
 def main():
