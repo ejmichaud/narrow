@@ -18,5 +18,6 @@ This respository accompanies the paper "On the creation of narrow AI: hierarchy 
 
 **Figure 12** (training-run-tripanel.png) is also created in `notebooks/llm-frontiers2.ipynb` using data from `experiments/trainscratch01`, `experiments/distillscratch00`, and `experiments/pruneandtrain01`.
 
+**Figure 11** (attribution-vs-ablation-residual.pdf) is created in `notebooks/attribution-vs-ablation.ipynb`.
 
 
