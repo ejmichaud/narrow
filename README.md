@@ -12,6 +12,11 @@ This respository accompanies the paper "On the creation of narrow AI: hierarchy 
 
 **Figure 8** (ablationscoresk3m3composite2bothlayers.pdf) and **Figure 9** (ablationscoresk3m3composite2bothlayersimgshow.pdf) are both created in `notebooks/parity-nonlocality-compositional.ipynb`.
 
+**Figure 5** (pruning-and-recovery-curves.pdf) is created in `notebooks/group-lasso-recovery.ipynb`, from the experiment `experiments/pruneandtrain00`, which uses data from `experiments/tuneprune15`.
+
+**Figure 6** (llmfrontierslosssmall.pdf) is created in `notebooks/llm-frontiers2.ipynb`. This loads data from `experiments/trainscratch01`, `experiments/distillscratch00`, and `experiments/pruneandtrain01`.
+
+**Figure 12** (training-run-tripanel.png) is also created in `notebooks/llm-frontiers2.ipynb` using data from `experiments/trainscratch01`, `experiments/distillscratch00`, and `experiments/pruneandtrain01`.
 
 
 

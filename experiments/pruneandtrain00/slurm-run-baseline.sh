@@ -40,8 +40,8 @@ python $HOME/narrow/prune_and_train.py \
     --model_name $MODEL_PATH \
     --dataset_name codeparrot/github-code \
     --max_length 1024 \
-    --batch_size 18 \
-    --accumulations 6 \
+    --batch_size 9 \
+    --accumulations 12 \
     --streaming \
     --sparsity $SPARSITY \
     --prune_samples 1024 \
