@@ -1,3 +1,5 @@
+"""Trains networks of varying sizes from scratch for even digits of MNIST"""
+
 import os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
@@ -8,7 +10,6 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
 # Define the model class
@@ -37,9 +38,9 @@ def train(model, device, train_loader, optimizer, epoch, segment, datapoints_see
 
     # Calculate start and end indices for this segment of the epoch
     total_batches = len(train_loader)
-    segment_size = total_batches // 8
+    segment_size = total_batches // 16
     start_idx = segment * segment_size
-    end_idx = (segment + 1) * segment_size if segment < 7 else total_batches
+    end_idx = (segment + 1) * segment_size if segment < 15 else total_batches
 
     for i, (data, target) in enumerate(train_loader):
         # Skip batches not in this segment
@@ -159,7 +160,7 @@ def main():
             final_segment = 0
 
             for epoch in range(1, num_epochs + 1):
-                for segment in range(8):  # 0-7 for eight segments per epoch
+                for segment in range(16):
                     train_accuracy, datapoints_seen = train(
                         model,
                         device,

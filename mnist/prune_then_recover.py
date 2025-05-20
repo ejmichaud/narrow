@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Implements attribute-based pruning for MNIST model followed by normal training
+Implements attribute-based pruning for MNIST model followed by recovery training
 """
 
 import torch
@@ -10,7 +10,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import os
-import matplotlib.pyplot as plt
 from collections import defaultdict
 from tqdm.auto import tqdm
 import numpy as np
@@ -18,7 +17,6 @@ import json
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import csv
 
-# Set up device - same as original
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -113,7 +111,7 @@ def compute_attribution_scores(model, train_loader, num_batches=10):
     Returns:
         List of (layer_idx, neuron_idx, score) tuples, sorted by score (lowest first)
     """
-    model.eval()  # Set model to evaluation mode
+    model.eval()
     scores = {
         i: torch.zeros(model.masks[i].size(0), device=device)
         for i in range(len(model.fc_layers))
@@ -286,7 +284,7 @@ def apply_pruning(model, score_tuples, target_neurons):
     }
 
 
-# Training function - matches pruning.py but without the pruning loss
+# Training function
 def train(
     model,
     device,
@@ -314,7 +312,6 @@ def train(
     total_samples = 0
 
     # Calculate how many batches to process for this segment of epoch
-    dataset_size = len(train_loader.dataset)
     total_batches = len(train_loader)
     segment_batches = total_batches // 16
 
@@ -431,7 +428,6 @@ def save_accuracy_data(model_accuracies, filename="data/attribution_pruning.csv"
         for entry in model_accuracies:
             writer.writerow(entry)
 
-    # Update the message to show singular/plural based on number of entries
     entry_count = len(model_accuracies)
     if entry_count == 1:
         print(f"Saved 1 result to {csv_path}")
@@ -440,26 +436,20 @@ def save_accuracy_data(model_accuracies, filename="data/attribution_pruning.csv"
 
 
 def main():
-    # Hyperparameters - match pruning.py
-    batch_size = 16  # Same as pruning.py
+    batch_size = 16
     hidden_dim = 1200
-    target_datapoints = 50000  # From pruning.py
+    target_datapoints = 50000
     target_accuracy = 97.0  # Target accuracy threshold
     max_grad_norm = 1.0
-    even_digits_only = True  # Match the original dataset filtering
+    even_digits_only = True
     check_partial_epochs = True  # Enable 1/16-epoch checking
 
-    # Create a list of target neuron counts to evaluate - same as pruning.py
+    # Create a list of target neuron counts to evaluate
     target_neurons_list = [600, 190, 25]
-    # add back in 500, 200, 120
-    # target_neurons_list = [1000]
 
-    # Define a wider range of learning rates since we're using a different approach
     learning_rates = [4e-4, 1e-3, 3e-3, 6e-3]
-    # learning_rates = [3e-3]
 
     # Number of runs per configuration
-    
     num_runs = 10
 
     # Maximum datapoints before giving up
@@ -531,7 +521,7 @@ def main():
                 print(f"\nRun {run+1}/{num_runs}")
                 print(f"{'-'*40}")
 
-                # Load the original pretrained model (exactly as in pruning.py)
+                # Load the original pretrained model
                 original_model_path = "models/original_model.pth"
                 if not os.path.exists(original_model_path):
                     raise FileNotFoundError(

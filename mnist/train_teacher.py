@@ -1,3 +1,5 @@
+"""Trains a teacher network for all of MNIST, to be used for pruning and distillation"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -34,7 +36,7 @@ class Net(nn.Module):
         x = x.view(-1, 28 * 28)
         for fc in self.fc_layers:
             x = F.relu(fc(x))
-            x = self.dropout(x)  # Apply dropout after activation
+            x = self.dropout(x)
         x = self.output_layer(x)
         return x
 

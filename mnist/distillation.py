@@ -8,6 +8,8 @@ import csv
 from datetime import datetime
 import os
 
+"""Hinton distillation for even MNIST digits, starting from the teacher model"""
+
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -170,7 +172,7 @@ def train_teacher(model, device, train_loader, optimizer, epoch):
     return accuracy
 
 
-# Testing function
+# Evaluation
 def test(model, device, test_loader, model_name="Model"):
     model.eval()
     correct = 0
@@ -187,7 +189,7 @@ def test(model, device, test_loader, model_name="Model"):
     return accuracy
 
 
-# Training function for student model with more frequent evaluation
+# Training function for student model
 def train_student_with_early_stopping(
     student_model,
     teacher_model,
@@ -205,7 +207,7 @@ def train_student_with_early_stopping(
     total_datapoints = 0
     check_interval = (
         len(train_loader.dataset) // 8
-    )  # Check accuracy every eighth of an epoch (changed from 4 to 8)
+    )  # Check accuracy every eighth of an epoch
 
     # Track batches for reporting
     batch_loss_sum = 0
@@ -269,11 +271,8 @@ def train_student_with_early_stopping(
                 # Set back to training mode
                 student_model.train()
 
-    # This should not be reached with the infinite loop, but just in case
-    return total_datapoints, student_acc
 
-
-# Save training data
+# Save data
 def save_training_data(data, filename):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", newline="") as csvfile:
@@ -293,17 +292,13 @@ def save_training_data(data, filename):
 # Main script
 def main():
     student_results = []
-    num_runs = 50  # Number of training runs for each configuration
+    num_runs = 10  # Number of training runs for each configuration
 
-    # Train the teacher model
+    # Load the teacher model
     teacher_model = TeacherNet(hidden_dim_teacher).to(device)
-    optimizer_teacher = optim.SGD(teacher_model.parameters(), lr=0.05, momentum=0.9)
-    print("Training Teacher Model...")
-    for epoch in range(1, num_epochs + 1):
-        train_teacher(
-            teacher_model, device, teacher_train_loader, optimizer_teacher, epoch
-        )
-    teacher_acc = test(teacher_model, device, teacher_test_loader, model_name="Teacher")
+    original_model_path = "models/original_model.pth"
+    teacher_model.load_state_dict(torch.load(original_model_path))
+    print("Loaded teacher model from", original_model_path)
 
     for hidden_dim in hidden_dims:
         for T in temperatures:

@@ -1,4 +1,4 @@
-"""Implements pruning using specified pruning loss"""
+"""Implements pruning using specified group lasso style pruning loss"""
 
 import torch
 import torch.nn as nn
@@ -9,15 +9,12 @@ from torchvision import datasets, transforms
 import csv
 import os
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import wandb
 import matplotlib.pyplot as plt
 import numpy as np
 import json
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# TRY ABLATING BY IMPORTANCE
 
 
 def visualize_mlp(model, weight_threshold=0.3, color_range=[-1, 1]):
@@ -179,7 +176,6 @@ class Net(nn.Module):
         return active_neurons
 
 
-# options: l1, tied_l1, tied_l2, tied_l2_with_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_lhalf, tied_l1_with_lhalf
 def pruning_loss(model, penalty_type="tied_l2_with_l2"):
     penalty = 0.0
     for i in range(len(model.fc_layers)):
@@ -246,42 +242,6 @@ def pruning_loss(model, penalty_type="tied_l2_with_l2"):
             lhalf_of_l1 = torch.norm(l1, p=0.5, dim=0)
             penalty = penalty + lhalf_of_l1 / (W1.numel() + W2.numel())
 
-        # # L1 of L1s of tied weights — selecting only bottom 1/3
-        # elif penalty_type == "tied_l1_with_l1":
-        #     combined = torch.cat([W1, W2.t()], dim=1)
-        #     l1_norms = torch.norm(combined, p=1, dim=1)
-
-        #     # Sort the L1 norms and select the bottom third
-        #     sorted_indices = torch.argsort(l1_norms)
-        #     num_selected = sorted_indices.size(0) // 3
-        #     # Add the number of currently masked neurons
-        #     num_masked = (model.masks[i] == 0).sum().item()
-        #     num_selected += num_masked
-        #     selected_indices = sorted_indices[:num_selected]
-
-        #     # Calculate penalty only for the selected indices
-        #     selected_l1 = l1_norms[selected_indices].sum()
-        #     num_elements_in_selected = combined[selected_indices].numel()
-
-        #     penalty = penalty + selected_l1 / num_elements_in_selected
-
-        # elif penalty_type == "next_try":
-        #     combined = torch.cat([W1, W2.t()], dim=1)
-        #     l1_norms = torch.norm(combined, p=1, dim=1)
-
-        #     # Sort the L1 norms and select the bottom third
-        #     sorted_indices = torch.argsort(l1_norms)
-        #     num_selected = sorted_indices.size(0) // 3
-        #     # Add the number of currently masked neurons
-        #     num_masked = (model.masks[i] == 0).sum().item()
-        #     num_selected += num_masked
-        #     selected_indices = sorted_indices[:num_selected]
-
-        #     # Calculate L_1/2 norm for the selected indices
-        #     selected_l1_half = torch.pow(l1_norms[selected_indices], 0.5).sum()
-        #     num_elements_in_selected = combined[selected_indices].numel()
-        #     penalty = penalty + torch.sqrt(selected_l1_half) / num_elements_in_selected
-
     return penalty
 
 
@@ -312,8 +272,8 @@ def train(
     total_samples = 0
     total_norm = 0
 
-    active_neurons = None  # Initialize to avoid reference before assignment
-    total_active = 0  # Initialize here to avoid the UnboundLocalError
+    active_neurons = None
+    total_active = 0
 
     # Calculate how many batches to process for this segment of epoch
     dataset_size = len(train_loader.dataset)
@@ -331,17 +291,6 @@ def train(
         if partial_epoch and (batch_idx < start_batch or batch_idx >= end_batch):
             continue
 
-        # PLOTTING
-        # if batch_idx % 100 == 1:
-        #     visualize_mlp(
-        #         model=model, weight_threshold=0.0, color_range=[-0.3, 0.3]
-        #     )  # HERE
-        #     plt.title(f"Step {len(os.listdir('data/weight_vis'))}")
-        #     plt.savefig(
-        #         f"data/weight_vis/pruning_step_{len(os.listdir('data/weight_vis')):04d}.png"
-        #     )
-        #     plt.close()
-
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
@@ -349,7 +298,6 @@ def train(
         # Compute loss
         loss_ce = F.cross_entropy(output, target)
         penalty = pruning_loss(model, penalty_type=penalty_type)
-        detached_penalty = torch.tensor(penalty).detach()
         loss = loss_ce + beta * penalty
 
         # Backward pass and optimization
@@ -449,10 +397,6 @@ def print_network_statistics(model):
             f"Layer {i+1}: {active_layer_neurons}/{layer_neurons} neurons active "
             f"({100.0 * active_layer_neurons / layer_neurons:.2f}%)"
         )
-
-    # # Add input and output layer neurons (always active)
-    # active_neurons += 794
-    # total_neurons += 794
 
     print(
         f"\nTotal: {active_neurons}/{total_neurons} neurons active "
@@ -658,17 +602,13 @@ def main():
     pruning_threshold = 0.05
     num_runs = 10  # Number of runs for each hyperparameter configuration
 
-    # List of target neuron counts to evaluate
-    target_neurons_list = [600, 400, 240, 100, 70]  # add back in 28
-    # target_neurons_list = [35, 25]
+    target_neurons_list = [600, 400, 240, 100, 70]
 
     # Fixed accuracy target
     target_accuracy = 97.0  # Target accuracy (%)
     max_datapoints = 50000  # Maximum datapoints to process before giving up
 
-    # Expanded sweep ranges for more thorough exploration
-    beta_values = [1e-3, 3e-3, 4e-3, 5e-3, 6.5e-3, 8e-3]  # add a higher option
-    # beta_values = [1e-3, 5e-3, 1e-2]
+    beta_values = [1e-3, 3e-3, 4e-3, 5e-3, 6.5e-3, 8e-3]
     learning_rates = [
         4e-4,
         8e-4,
@@ -677,14 +617,7 @@ def main():
         3e-3,
         5e-3,
         8e-3,
-    ]  # add back in 1e-2 to go really low
-    # learning_rates = [5e-3, 8e-3, 1e-2]
-
-    # Focused sweep around 1e-2, 1e-2 (staying within 5e-3 to 5e-1)
-    # 1.5e-2, 8e-3 works rly well for n=100 neurons remaining to chop down a
-    # ton of the network
-    # beta_values = [1.5e-2]
-    # learning_rates = [8e-3]
+    ]
 
     # Enable 1/16-epoch checking
     check_partial_epochs = True
@@ -944,8 +877,7 @@ def main():
                     "Pruning Penalty": pruning_penalty,
                     "Target Neurons": target_neurons,
                     "Learning Rate": lr,
-                    "Success": success_rate
-                    >= 0.5,  # Success if at least half the runs succeeded
+                    "Success": success_rate >= 0.5,
                 }
 
                 # Add to sweep results
