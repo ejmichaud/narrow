@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 """
-This script implements prune-finetuning by:
-1) Subclassing the Hugging Face Trainer to allow a loss function that
-   incentivizes structural sparsity in the model (e.g., L1 regularization).
-2) Training a causal language model with an additional L1 penalty on its weights.
-3) Saving the final model checkpoints.
+This script implements prune-finetuning with group lasso style regularization.
 
 Usage:
     python tuneprune.py \

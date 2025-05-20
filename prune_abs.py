@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """
-Prune a transformer model using one of two strategies (“attribution” or “weight_norm”)
-and evaluate the pruned model on a test dataset. Evaluation statistics are saved
-to disk.
+Prune a transformer model using one of two strategies (“attribution” or “weight_norm”) and evaluate the pruned model on a test dataset. Evaluation statistics are saved to disk.
 
-Example (attribution sequential pruning):
-
+Example (attribution pruning):
 
 python3 prune_abs.py --model_name NousResearch/Llama-3.2-1B \
     --pruning_strategy attribution \

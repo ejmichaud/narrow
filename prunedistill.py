@@ -1,13 +1,9 @@
 #!/usr/bin/env python
 """
-This script implements prune-finetuning by:
-1) Subclassing the Hugging Face Trainer to allow a loss function that
-   incentivizes structural sparsity in the model (e.g., L1 regularization).
-2) Training a causal language model with an additional L1 penalty on its weights.
-3) Saving the final model checkpoints.
+This script implements a pruning-distillation hybrid algorithm on LLMs.
+(Pruning while incorporating KL divergence loss with the original model before pruning)
 
 Usage:
-    python prune_finetune.py --model_name <model> --num_train_epochs <epochs> ...
 
 CUDA_LAUNCH_BLOCKING=1 python3 prunedistill.py \
 --model_name NousResearch/Llama-3.2-1B \
