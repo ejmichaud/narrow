@@ -5,16 +5,6 @@ and evaluate the pruned model on a test dataset. Evaluation statistics are saved
 to disk.
 
 Example (attribution sequential pruning):
-    python3 prune_abs.py --model_name /afs/csail.mit.edu/u/a/asher/narrow/checkpoint-100000 \
-      --pruning_strategy attribution \
-      --max_length 512 \
-      --batch_size 16 \
-      --num_samples 2048 \
-      --streaming \
-      --sparsities 0.75 \
-      --num_test_samples 2048 \
-      --eval_skip 2048 \
-      --output_dir ./pruned_models/after_training
 
 
 python3 prune_abs.py --model_name NousResearch/Llama-3.2-1B \
@@ -35,14 +25,12 @@ import os
 import copy
 from collections.abc import Mapping
 from collections import defaultdict
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Tuple
 
 from tqdm.auto import tqdm
 import numpy as np
-import einops
 import torch
 import torch.nn as nn
-import torch.nn.utils.prune as prune
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import (
@@ -248,8 +236,6 @@ def compute_attribution_scores(
          sorted_scores: List of tuples (layer_idx, neuron_idx, score) sorted by score ascending.
          total_neurons: Total number of neurons considered.
     """
-    # Ensure gradients are enabled for attribution computation.
-    # Setting the model to train mode will typically allow gradients to be computed.
     model.train()
 
     def get_attribution_hook(cache, name, hook_cache):

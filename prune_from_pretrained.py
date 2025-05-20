@@ -113,7 +113,7 @@ def prune_by_attribution(
         )
 
     def _prepare_inputs(
-        inputs: Dict[str, Union[torch.Tensor, Any]]
+        inputs: Dict[str, Union[torch.Tensor, Any]],
     ) -> Dict[str, Union[torch.Tensor, Any]]:
         if isinstance(inputs, Mapping):
             return type(inputs)({k: _prepare_input(v) for k, v in inputs.items()})
@@ -290,9 +290,6 @@ def prepare_data_for_pruning(
 def main():
     # Choose a model
     model_name = "NousResearch/Llama-3.2-1B"
-    # model_name = (
-    #     "/om2/user/ericjm/narrow/experiments/tuneprune5/lambda_0.0005/checkpoint-30000"
-    # )
     # Choose a pruning strategy — "attribution" or "weight_norm"
     pruning_strategy = "attribution"
     # Choose whether to save the pruned model to a specified output directory
