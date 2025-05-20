@@ -132,6 +132,8 @@ def parse_args():
                         help="Number of total epochs to train (if not using max_steps).")
     parser.add_argument("--batch_size", type=int, default=4,
                         help="Per-device batch size.")
+    parser.add_argument("--accumulations", type=int, default=2,
+                        help="Number of gradient accumulation steps.")
     parser.add_argument("--eval_steps", type=int, default=500,
                         help="Perform evaluation every N steps.")
     parser.add_argument("--logging_steps", type=int, default=5,
@@ -216,6 +218,7 @@ def main():
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps if args.max_steps > 0 else -1,
         per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.accumulations,
         per_device_eval_batch_size=args.batch_size,
         logging_dir=os.path.join(args.output_dir, "logs"),
         logging_steps=args.logging_steps,
@@ -223,9 +226,10 @@ def main():
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
-        gradient_accumulation_steps=1,
-        fp16=False,  # Set to True if you want mixed precision (and your GPU supports it)
-        gradient_checkpointing=True,  # Potential memory savings
+        optim="adamw_torch_fused", # FASTER OPTIMIZER
+        # fp16=True,  # Set to True if you want mixed precision (and your GPU supports it)
+        bf16=True, # BF16
+        gradient_checkpointing=False,  # Potential memory savings
         learning_rate=args.lr,
         warmup_steps=1000,
     )
