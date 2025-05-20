@@ -21,3 +21,5 @@ This respository accompanies the paper "On the creation of narrow AI: hierarchy 
 **Figure 11** (attribution-vs-ablation-residual.pdf) is created in `notebooks/attribution-vs-ablation.ipynb`.
 
 **Figure 13** (random_vs_attribution_recovery_curves.pdf) is created in `notebooks/random_vs_attribution.ipynb` using data from `experiments/pruneandtrain01` and `experiments/pruneandtrainrandom00`.
+
+If anything is missing or unclear, contact Eric at `ericjm [at] mit.edu` or `eric.michaud99 [at] gmail.com`.
