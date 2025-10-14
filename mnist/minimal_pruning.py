@@ -1,4 +1,4 @@
-"""Implements pruning using specified pruning loss"""
+"""Implements group lasso style pruning using specified pruning loss — minimal, non-final version of the file"""
 
 import torch
 import torch.nn as nn
@@ -9,14 +9,11 @@ from torchvision import datasets, transforms
 import csv
 import os
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import wandb
 import matplotlib.pyplot as plt
 import numpy as np
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# TRY ABLATING BY IMPORTANCE
 
 
 def visualize_mlp(model, weight_threshold=0.3, color_range=[-1, 1]):
@@ -178,7 +175,6 @@ class Net(nn.Module):
         return active_neurons
 
 
-# options: l1, tied_l1, tied_l2, tied_l2_with_l1, tied_l1_with_l1, tied_l2_with_l2, tied_l2_with_lhalf, tied_l1_with_lhalf
 def pruning_loss(model, penalty_type="tied_l2_with_l2"):
     penalty = 0.0
     for i in range(len(model.fc_layers)):
@@ -247,42 +243,6 @@ def pruning_loss(model, penalty_type="tied_l2_with_l2"):
             lhalf_of_l1 = torch.norm(l1, p=0.5, dim=0)
             penalty = penalty + lhalf_of_l1 / (W1.numel() + W2.numel())
 
-        # # L1 of L1s of tied weights — selecting only bottom 1/3
-        # elif penalty_type == "tied_l1_with_l1":
-        #     combined = torch.cat([W1, W2.t()], dim=1)
-        #     l1_norms = torch.norm(combined, p=1, dim=1)
-
-        #     # Sort the L1 norms and select the bottom third
-        #     sorted_indices = torch.argsort(l1_norms)
-        #     num_selected = sorted_indices.size(0) // 3
-        #     # Add the number of currently masked neurons
-        #     num_masked = (model.masks[i] == 0).sum().item()
-        #     num_selected += num_masked
-        #     selected_indices = sorted_indices[:num_selected]
-
-        #     # Calculate penalty only for the selected indices
-        #     selected_l1 = l1_norms[selected_indices].sum()
-        #     num_elements_in_selected = combined[selected_indices].numel()
-
-        #     penalty = penalty + selected_l1 / num_elements_in_selected
-
-        # elif penalty_type == "next_try":
-        #     combined = torch.cat([W1, W2.t()], dim=1)
-        #     l1_norms = torch.norm(combined, p=1, dim=1)
-
-        #     # Sort the L1 norms and select the bottom third
-        #     sorted_indices = torch.argsort(l1_norms)
-        #     num_selected = sorted_indices.size(0) // 3
-        #     # Add the number of currently masked neurons
-        #     num_masked = (model.masks[i] == 0).sum().item()
-        #     num_selected += num_masked
-        #     selected_indices = sorted_indices[:num_selected]
-
-        #     # Calculate L_1/2 norm for the selected indices
-        #     selected_l1_half = torch.pow(l1_norms[selected_indices], 0.5).sum()
-        #     num_elements_in_selected = combined[selected_indices].numel()
-        #     penalty = penalty + torch.sqrt(selected_l1_half) / num_elements_in_selected
-
     return penalty
 
 
@@ -326,8 +286,6 @@ def train(
         # Compute loss
         loss_ce = F.cross_entropy(output, target)
         penalty = pruning_loss(model, penalty_type=penalty_type)
-        detached_penalty = torch.tensor(penalty).detach()
-        # beta=0.18 works well -- 0.23 for methods that take inverses
         loss = loss_ce + beta * (penalty)
 
         # Backward pass and optimization
@@ -347,9 +305,7 @@ def train(
         # Update masks
         if beta > 0:
             active_neurons = model.update_masks()
-            total_active = sum(
-                active_neurons
-            )  # No longer adding input and output layer neurons
+            total_active = sum(active_neurons)
 
         total_loss += loss
         total_ce_loss += loss_ce
@@ -379,18 +335,6 @@ def train(
     print(f"Average CE Loss: {avg_ce_loss.item():.6f}")
     print(f"Average Pruning Loss: {avg_pruning_loss.item():.6f}")
     print(f"Average Loss: {avg_loss.item():.6f}")
-
-    # Log metrics to W&B
-    # wandb.log(
-    #     {
-    #         "epoch": epoch,
-    #         "average_weight_norm": avg_weight_norm.item(),
-    #         "pruning_loss": avg_pruning_loss.item(),
-    #         "ce_loss": avg_ce_loss.item(),
-    #         "active_neurons": total_active,
-    #         "accuracy": accuracy,
-    #     }
-    # )
 
     return beta, total_samples
 
@@ -426,10 +370,6 @@ def print_network_statistics(model):
             f"Layer {i+1}: {active_layer_neurons}/{layer_neurons} neurons active "
             f"({100.0 * active_layer_neurons / layer_neurons:.2f}%)"
         )
-
-    # # Add input and output layer neurons (always active)
-    # active_neurons += 794
-    # total_neurons += 794
 
     print(
         f"\nTotal: {active_neurons}/{total_neurons} neurons active "
@@ -485,30 +425,11 @@ def main():
     hidden_dim = 1200
     batch_size = 64
     num_epochs = 4
-    pruning_threshold = 0.3  # up from 0.2
-    # Beta values for pruning loss -- 0.2 is good
-    # For tied_l2_with_lhalf: approximately 0.5 / average_pruning_loss = 64
-    # For tied_l2: approximately 3 / average_pruning_loss = 3000
-    # For tied_l1: approximately 500
-    # For tied_l1_with_lhalf: approximately 25
+    pruning_threshold = 0.3
     beta_values = [64]
     learning_rates = [2e-1]
     save_model_weights = False
     model_save_dir = "models"
-
-    # Initialize W&B
-    # wandb.init(
-    #     project="pruning-experiment",
-    #     config={
-    #         "pruning_penalty": pruning_penalty,
-    #         "hidden_dim": hidden_dim,
-    #         "batch_size": batch_size,
-    #         "num_epochs": num_epochs,
-    #         "pruning_threshold": pruning_threshold,
-    #         "beta_values": beta_values,
-    #         "learning_rates": learning_rates,
-    #     },
-    # )
 
     # Load the original model
     original_model_path = "models/original_model.pth"
@@ -538,9 +459,6 @@ def main():
 
     for lr in learning_rates:
         for beta in beta_values:
-            # wandb.config.update(
-            #     {"learning_rate": lr, "beta": beta}, allow_val_change=True
-            # )
             print(f"Pruning with Beta = {beta} and {pruning_penalty} Penalty")
             # Initialize prunable model and load original weights
             model = Net(
@@ -591,16 +509,6 @@ def main():
                         "Total Datapoints": total_datapoints,
                     }
                 )
-                # Log metrics to W&B
-                # wandb.log(
-                #     {
-                #         "epoch": epoch,
-                #         "accuracy": accuracy,
-                #         "active_neurons": active_neurons,
-                #         "beta": beta,
-                #         "total_datapoints": total_datapoints,
-                #     }
-                # )
 
             # Optional: save model weights at the end of training
             if save_model_weights:
@@ -612,7 +520,6 @@ def main():
 
     # Save accuracy data to CSV
     save_accuracy_data(model_accuracies, pruning_penalty)
-    # wandb.finish()
 
 
 if __name__ == "__main__":

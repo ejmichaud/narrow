@@ -13,11 +13,3 @@ accelerate
 safetensors
 numpy
 packaging
-# Optional dependencies
-# bitsandbytes
-# deepspeed
-# apex
-# Schedule-Free
-# galore-torch
-# grokadamw
-# lomo-pytorch
