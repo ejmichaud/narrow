@@ -1,0 +1,31 @@
+Computing attribution:   0%|          | 0/128 [00:00<?, ?it/s]Computing attribution:   0%|          | 0/128 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/n/home04/ericjm/narrow/experiments/unlearning/create_attribution_pruned_models.py", line 310, in <module>
+    main()
+  File "/n/home04/ericjm/narrow/experiments/unlearning/create_attribution_pruned_models.py", line 239, in main
+    attribution_scores = compute_attribution_scores(model, dataloader, num_batches)
+  File "/n/home04/ericjm/narrow/experiments/unlearning/create_attribution_pruned_models.py", line 103, in compute_attribution_scores
+    outputs = model(**batch)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/transformers/utils/deprecation.py", line 172, in wrapped_func
+    return func(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/transformers/models/llama/modeling_llama.py", line 842, in forward
+    outputs = self.model(
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/transformers/models/llama/modeling_llama.py", line 550, in forward
+    inputs_embeds = self.embed_tokens(input_ids)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 190, in forward
+    return F.embedding(
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/torch/nn/functional.py", line 2551, in embedding
+    return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu! (when checking argument for argument index in method wrapper_CUDA__index_select)

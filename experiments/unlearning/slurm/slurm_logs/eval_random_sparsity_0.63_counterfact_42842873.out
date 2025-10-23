@@ -1,0 +1,31 @@
+================================================================================
+Downstream Evaluation with LR Sweep
+================================================================================
+Model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63
+Dataset: counterfact
+LR sweep: [1e-06, 5e-06, 1e-05, 5e-05, 0.0001]
+================================================================================
+
+Loading model...
+Baseline evaluation...
+Baseline: 0.000
+
+Fine-tuning with lr=1e-06...
+  Final: 0.433
+Fine-tuning with lr=5e-06...
+  Final: 0.448
+Fine-tuning with lr=1e-05...
+  Final: 0.419
+Fine-tuning with lr=5e-05...
+  Final: 0.367
+Fine-tuning with lr=0.0001...
+  Final: 0.334
+
+================================================================================
+Results saved to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/pruned_downstream_results/random_sparsity_0.63/counterfact/results.json
+Baseline: 0.000
+Best LR: 5e-06
+Best Accuracy: 0.448
+Improvement: +0.448
+================================================================================
+Job completed at Thu Oct 23 03:53:48 EDT 2025

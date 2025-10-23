@@ -1,0 +1,22 @@
+Training random_sparsity_0.63 on Python code
+Input model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/random_sparsity_0.63
+
+================================================================================
+Training Pruned Model on Python Code
+================================================================================
+Model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/random_sparsity_0.63
+Max steps: 10000
+Save steps: 2500
+Convert to variable size: True
+================================================================================
+
+Loading model...
+Converting to VariableSizeLlamaForCausalLM...
+  Original parameters: 1,235,814,400
+  New parameters: 728,473,600
+  Reduction: 41.1%
+Loading Python code dataset (this may take a while on first run)...
+
+Job completed at Wed Oct 22 17:33:52 EDT 2025

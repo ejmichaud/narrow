@@ -1,0 +1,31 @@
+================================================================================
+Downstream Evaluation with LR Sweep
+================================================================================
+Model: NousResearch/Llama-3.2-1B
+Dataset: wmdp_bio
+LR sweep: [1e-06, 5e-06, 1e-05, 2e-05, 5e-05]
+================================================================================
+
+Loading model...
+Baseline evaluation...
+Baseline: 0.522
+
+Fine-tuning with lr=1e-06...
+  Final: 0.620
+Fine-tuning with lr=5e-06...
+  Final: 0.412
+Fine-tuning with lr=1e-05...
+  Final: 0.275
+Fine-tuning with lr=2e-05...
+  Final: 0.275
+Fine-tuning with lr=5e-05...
+  Final: 0.275
+
+================================================================================
+Results saved to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/pruned_downstream_results/base_model/wmdp_bio/results.json
+Baseline: 0.522
+Best LR: 1e-06
+Best Accuracy: 0.620
+Improvement: +0.098
+================================================================================
+Job completed at Wed Oct 22 20:45:36 EDT 2025

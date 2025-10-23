@@ -1,0 +1,31 @@
+================================================================================
+Downstream Evaluation with LR Sweep
+================================================================================
+Model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.3
+Dataset: wmdp_chem
+LR sweep: [1e-06, 5e-06, 1e-05, 2e-05, 5e-05]
+================================================================================
+
+Loading model...
+Baseline evaluation...
+Baseline: 0.366
+
+Fine-tuning with lr=1e-06...
+  Final: 0.244
+Fine-tuning with lr=5e-06...
+  Final: 0.232
+Fine-tuning with lr=1e-05...
+  Final: 0.244
+Fine-tuning with lr=2e-05...
+  Final: 0.244
+Fine-tuning with lr=5e-05...
+  Final: 0.244
+
+================================================================================
+Results saved to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/pruned_downstream_results/attribution_sparsity_0.3/wmdp_chem/results.json
+Baseline: 0.366
+Best LR: 1e-06
+Best Accuracy: 0.244
+Improvement: -0.122
+================================================================================
+Job completed at Wed Oct 22 20:18:00 EDT 2025

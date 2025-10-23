@@ -1,0 +1,21 @@
+================================
+Creating Attribution Pruned Models
+================================
+
+================================================================================
+Attribution-Based Neuron Pruning
+================================================================================
+Base model: NousResearch/Llama-3.2-1B
+Sparsity levels: [0.3, 0.63, 0.8]
+Attribution samples: 1024
+Output directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned
+================================================================================
+
+Loading model for attribution...
+Loading 1024 Python code samples...
+Computing attribution scores on 128 batches...
+
+================================
+Attribution pruned models created!
+================================
+Job completed at Wed Oct 22 15:08:57 EDT 2025

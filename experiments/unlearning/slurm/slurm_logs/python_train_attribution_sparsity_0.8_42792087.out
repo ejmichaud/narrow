@@ -1,0 +1,4 @@
+Training attribution_sparsity_0.8 on Python code
+Input model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.8
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/attribution_sparsity_0.8
+

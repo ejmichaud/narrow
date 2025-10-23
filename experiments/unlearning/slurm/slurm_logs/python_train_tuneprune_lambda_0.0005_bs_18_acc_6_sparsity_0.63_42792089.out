@@ -1,0 +1,4 @@
+Training tuneprune_lambda_0.0005_bs_18_acc_6_sparsity_0.63 on Python code
+Input model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0005_bs_18_acc_6_sparsity_0.63
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/tuneprune_lambda_0.0005_bs_18_acc_6_sparsity_0.63
+

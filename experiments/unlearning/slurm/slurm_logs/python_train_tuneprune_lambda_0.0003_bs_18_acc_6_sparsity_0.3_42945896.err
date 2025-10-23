@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/n/home04/ericjm/narrow/experiments/unlearning/train_on_python.py", line 214, in <module>
+    main()
+  File "/n/home04/ericjm/narrow/experiments/unlearning/train_on_python.py", line 149, in main
+    dataset = load_from_disk(cache_dir)
+  File "/n/home04/ericjm/.conda/envs/narrow/lib/python3.10/site-packages/datasets/load.py", line 2148, in load_from_disk
+    raise FileNotFoundError(
+FileNotFoundError: Directory /n/netscratch/iaifi_lab/Lab/ericjm/.cache/huggingface/datasets/codeparrot___github-code/all-all-4b2efe4a27feed92 is neither a `Dataset` directory nor a `DatasetDict` directory.

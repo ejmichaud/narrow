@@ -1,0 +1,23 @@
+Training tuneprune_lambda_0.0003_bs_18_acc_6_sparsity_0.3 on Python code
+Input model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0003_bs_18_acc_6_sparsity_0.3
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/tuneprune_lambda_0.0003_bs_18_acc_6_sparsity_0.3
+
+================================================================================
+Training Pruned Model on Python Code
+================================================================================
+Model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0003_bs_18_acc_6_sparsity_0.3
+Output: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/python_trained/tuneprune_lambda_0.0003_bs_18_acc_6_sparsity_0.3
+Max steps: 10000
+Save steps: 2500
+Convert to variable size: True
+================================================================================
+
+Loading model...
+Converting to VariableSizeLlamaForCausalLM...
+  Original parameters: 1,235,814,400
+  New parameters: 994,226,176
+  Reduction: 19.5%
+Loading Python code dataset...
+Tokenizing dataset...
+
+Starting training...

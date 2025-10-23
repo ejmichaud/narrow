@@ -1,0 +1,16 @@
+Loading model from NousResearch/Llama-3.2-1B...
+Loading dataset...
+Baseline evaluation...
+Baseline test accuracy: 0.650
+Fine-tuning...
+Epoch 1 avg loss: 1.0629
+  Test accuracy: 0.627
+Epoch 2 avg loss: 0.5490
+  Test accuracy: 0.673
+
+Final evaluation...
+Final test accuracy: 0.673
+
+Results saved to ../results/base_model/ai2_arc/results.json
+Accuracy change: 0.650 -> 0.673 (+0.023)
+Job completed at Sat Oct 18 14:25:06 EDT 2025

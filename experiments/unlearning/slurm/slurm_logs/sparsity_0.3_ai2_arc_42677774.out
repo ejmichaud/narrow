@@ -1,0 +1,16 @@
+Loading model from /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.3...
+Loading dataset...
+Baseline evaluation...
+Baseline test accuracy: 0.245
+Fine-tuning with lr=5e-06...
+Epoch 1 avg loss: 1.5036
+  Test accuracy: 0.248
+Epoch 2 avg loss: 1.4030
+  Test accuracy: 0.248
+
+Final evaluation...
+Final test accuracy: 0.248
+
+Results saved to ../results/sparsity_0.3/ai2_arc/results.json
+Accuracy change: 0.245 -> 0.248 (+0.003)
+Job completed at Wed Oct 22 08:19:12 EDT 2025

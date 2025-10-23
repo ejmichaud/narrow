@@ -1,0 +1,240 @@
+================================
+Creating All Pruned Models
+================================
+
+Creating random pruned models...
+================================================================================
+Random Neuron Pruning
+================================================================================
+Base model: NousResearch/Llama-3.2-1B
+Sparsity levels: [0.3, 0.63, 0.8]
+Output directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned
+Random seed: 42
+================================================================================
+
+Loading tokenizer...
+
+================================================================================
+Processing sparsity level: 30.00%
+================================================================================
+Loading model: NousResearch/Llama-3.2-1B...
+
+=== Random Pruning ===
+Total neurons: 131072
+Target sparsity: 30.0%
+Neurons to prune: 39321
+Successfully pruned 39321 neurons
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 2476 / 8192
+  Layer 1: 2379 / 8192
+  Layer 2: 2381 / 8192
+  Layer 3: 2475 / 8192
+  Layer 4: 2382 / 8192
+  Layer 5: 2516 / 8192
+  Layer 6: 2554 / 8192
+  Layer 7: 2471 / 8192
+  Layer 8: 2438 / 8192
+  Layer 9: 2491 / 8192
+  Layer 10: 2382 / 8192
+  Layer 11: 2449 / 8192
+  Layer 12: 2511 / 8192
+  Layer 13: 2415 / 8192
+  Layer 14: 2507 / 8192
+  Layer 15: 2494 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.3
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.3/pruning_stats.json
+
+================================================================================
+Processing sparsity level: 63.00%
+================================================================================
+Loading model: NousResearch/Llama-3.2-1B...
+
+=== Random Pruning ===
+Total neurons: 131072
+Target sparsity: 63.0%
+Neurons to prune: 82575
+Successfully pruned 82575 neurons
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 5190 / 8192
+  Layer 1: 5055 / 8192
+  Layer 2: 5128 / 8192
+  Layer 3: 5153 / 8192
+  Layer 4: 5095 / 8192
+  Layer 5: 5175 / 8192
+  Layer 6: 5153 / 8192
+  Layer 7: 5230 / 8192
+  Layer 8: 5203 / 8192
+  Layer 9: 5150 / 8192
+  Layer 10: 5122 / 8192
+  Layer 11: 5171 / 8192
+  Layer 12: 5195 / 8192
+  Layer 13: 5129 / 8192
+  Layer 14: 5213 / 8192
+  Layer 15: 5213 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63/pruning_stats.json
+
+================================================================================
+Processing sparsity level: 80.00%
+================================================================================
+Loading model: NousResearch/Llama-3.2-1B...
+
+=== Random Pruning ===
+Total neurons: 131072
+Target sparsity: 80.0%
+Neurons to prune: 104857
+Successfully pruned 104857 neurons
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 6580 / 8192
+  Layer 1: 6536 / 8192
+  Layer 2: 6520 / 8192
+  Layer 3: 6508 / 8192
+  Layer 4: 6574 / 8192
+  Layer 5: 6582 / 8192
+  Layer 6: 6571 / 8192
+  Layer 7: 6568 / 8192
+  Layer 8: 6577 / 8192
+  Layer 9: 6612 / 8192
+  Layer 10: 6504 / 8192
+  Layer 11: 6507 / 8192
+  Layer 12: 6578 / 8192
+  Layer 13: 6551 / 8192
+  Layer 14: 6524 / 8192
+  Layer 15: 6565 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.8
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.8/pruning_stats.json
+
+================================================================================
+All models created successfully!
+================================================================================
+
+Output directory structure:
+  /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.3/
+  /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.63/
+  /n/netscratch/iaifi_lab/Lab/ericjm/narrow/random_pruned/sparsity_0.8/
+
+---
+
+Creating attribution pruned models...
+================================================================================
+Attribution-Based Neuron Pruning
+================================================================================
+Base model: NousResearch/Llama-3.2-1B
+Sparsity levels: [0.3, 0.63, 0.8]
+Attribution samples: 1024
+Output directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned
+================================================================================
+
+Loading model for attribution...
+Loading 1024 Python code samples...
+Computing attribution scores on 128 batches...
+
+---
+
+Creating tuneprune pruned models...
+================================================================================
+TunePrune Model Pruning
+================================================================================
+TunePrune directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune15-redo
+Output directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned
+================================================================================
+
+
+================================================================================
+Processing: lambda_0.0003_bs_18_acc_6 → 30.0% sparsity
+================================================================================
+Loading model from: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune15-redo/lambda_0.0003_bs_18_acc_6/checkpoint-70000
+
+Pruning 39321 / 131072 neurons (30.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 396 / 8192
+  Layer 1: 116 / 8192
+  Layer 2: 484 / 8192
+  Layer 3: 1722 / 8192
+  Layer 4: 2058 / 8192
+  Layer 5: 3062 / 8192
+  Layer 6: 3740 / 8192
+  Layer 7: 3882 / 8192
+  Layer 8: 3566 / 8192
+  Layer 9: 3116 / 8192
+  Layer 10: 2295 / 8192
+  Layer 11: 2033 / 8192
+  Layer 12: 2074 / 8192
+  Layer 13: 2992 / 8192
+  Layer 14: 4063 / 8192
+  Layer 15: 3722 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0003_bs_18_acc_6_sparsity_0.3
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0003_bs_18_acc_6_sparsity_0.3/pruning_stats.json
+
+================================================================================
+Processing: lambda_0.0005_bs_18_acc_6 → 63.0% sparsity
+================================================================================
+Loading model from: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune15-redo/lambda_0.0005_bs_18_acc_6/checkpoint-70000
+
+Pruning 82575 / 131072 neurons (63.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 5323 / 8192
+  Layer 1: 4294 / 8192
+  Layer 2: 3927 / 8192
+  Layer 3: 4337 / 8192
+  Layer 4: 4476 / 8192
+  Layer 5: 5439 / 8192
+  Layer 6: 5866 / 8192
+  Layer 7: 5920 / 8192
+  Layer 8: 5383 / 8192
+  Layer 9: 5014 / 8192
+  Layer 10: 4805 / 8192
+  Layer 11: 4912 / 8192
+  Layer 12: 5286 / 8192
+  Layer 13: 5614 / 8192
+  Layer 14: 6291 / 8192
+  Layer 15: 5688 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0005_bs_18_acc_6_sparsity_0.63
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.0005_bs_18_acc_6_sparsity_0.63/pruning_stats.json
+
+================================================================================
+Processing: lambda_0.001_bs_18_acc_6 → 80.0% sparsity
+================================================================================
+Loading model from: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune15-redo/lambda_0.001_bs_18_acc_6/checkpoint-70000
+
+Pruning 104857 / 131072 neurons (80.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 6854 / 8192
+  Layer 1: 7002 / 8192
+  Layer 2: 6326 / 8192
+  Layer 3: 5911 / 8192
+  Layer 4: 5979 / 8192
+  Layer 5: 6573 / 8192
+  Layer 6: 6574 / 8192
+  Layer 7: 6436 / 8192
+  Layer 8: 6244 / 8192
+  Layer 9: 6033 / 8192
+  Layer 10: 6341 / 8192
+  Layer 11: 6654 / 8192
+  Layer 12: 7047 / 8192
+  Layer 13: 7091 / 8192
+  Layer 14: 7156 / 8192
+  Layer 15: 6636 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.001_bs_18_acc_6_sparsity_0.8
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune_pruned/lambda_0.001_bs_18_acc_6_sparsity_0.8/pruning_stats.json
+
+================================================================================
+All tuneprune-pruned models created successfully!
+================================================================================
+
+================================
+All pruned models created!
+================================
+
+Models saved to $SCRATCH/iaifi_lab/Lab/ericjm/narrow/:
+  - random_pruned/sparsity_{0.3,0.63,0.8}/
+  - attribution_pruned/sparsity_{0.3,0.63,0.8}/
+  - tuneprune_pruned/lambda_*_sparsity_*/
+
+Job completed at Wed Oct 22 14:30:22 EDT 2025

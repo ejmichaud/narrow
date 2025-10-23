@@ -1,0 +1,25 @@
+\begin{table}[t]
+\centering
+\caption{Downstream task performance across sparsity levels (Base→FT).}
+\label{tab:pruned_results}
+\small
+\begin{tabular}{llccccc}
+\hline
+\textbf{Method} & \textbf{Spar.} & \textbf{CounterFact} & \textbf{AI2-ARC} & \textbf{WMDP Bio} & \textbf{WMDP Cyber} & \textbf{WMDP Chem} \\
+\hline
+Base & 0\% & 0.18→0.49 & 0.65→0.67 & 0.52→0.62 & 0.35→0.59 & 0.24→0.28 \\
+\hline
+Random & 30\% & 0.00→0.50 & 0.24→0.25 & 0.22→0.27 & 0.27→0.27 & 0.24→0.24 \\
+Attribution & 30\% & 0.12→0.65 & 0.35→0.69 & 0.36→0.56 & 0.27→0.55 & 0.37→0.24 \\
+Group Lasso & 30\% & 0.06→0.47 & 0.25→0.25 & 0.24→0.31 & 0.26→0.27 & 0.24→0.24 \\
+\hline
+Random & 63\% & 0.00→0.45 & 0.25→0.25 & 0.23→0.27 & 0.26→0.28 & 0.24→0.24 \\
+Attribution & 63\% & 0.02→0.52 & 0.25→0.30 & 0.23→0.34 & 0.26→0.32 & 0.27→0.30 \\
+Group Lasso & 63\% & 0.03→0.45 & 0.25→0.25 & 0.24→0.29 & 0.27→0.30 & 0.27→0.30 \\
+\hline
+Random & 80\% & 0.00→0.42 & 0.26→0.25 & 0.26→0.28 & 0.23→0.26 & 0.24→0.27 \\
+Attribution & 80\% & 0.00→0.47 & 0.25→0.25 & 0.23→0.27 & 0.26→0.28 & 0.26→0.32 \\
+Group Lasso & 80\% & 0.02→0.44 & 0.25→0.25 & 0.24→0.29 & 0.26→0.29 & 0.26→0.24 \\
+\hline
+\end{tabular}
+\end{table}

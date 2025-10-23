@@ -1,0 +1,108 @@
+================================
+Creating Attribution Pruned Models
+================================
+
+================================================================================
+Attribution-Based Neuron Pruning
+================================================================================
+Base model: NousResearch/Llama-3.2-1B
+Sparsity levels: [0.3, 0.63, 0.8]
+Attribution samples: 1024
+Output directory: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned
+================================================================================
+
+Loading model for attribution...
+Loading 1024 Python code samples...
+Computing attribution scores on 128 batches...
+
+Saved attribution scores to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/attribution_scores.pt
+
+================================================================================
+Processing sparsity level: 30.00%
+================================================================================
+Loading fresh model...
+
+Pruning 39321 / 131072 neurons (30.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 1 / 8192
+  Layer 1: 17 / 8192
+  Layer 2: 45 / 8192
+  Layer 3: 303 / 8192
+  Layer 4: 820 / 8192
+  Layer 5: 1647 / 8192
+  Layer 6: 2509 / 8192
+  Layer 7: 2806 / 8192
+  Layer 8: 2705 / 8192
+  Layer 9: 2515 / 8192
+  Layer 10: 1840 / 8192
+  Layer 11: 2296 / 8192
+  Layer 12: 4316 / 8192
+  Layer 13: 5619 / 8192
+  Layer 14: 6357 / 8192
+  Layer 15: 5525 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.3
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.3/pruning_stats.json
+
+================================================================================
+Processing sparsity level: 63.00%
+================================================================================
+Loading fresh model...
+
+Pruning 82575 / 131072 neurons (63.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 547 / 8192
+  Layer 1: 3072 / 8192
+  Layer 2: 3688 / 8192
+  Layer 3: 3829 / 8192
+  Layer 4: 4316 / 8192
+  Layer 5: 5272 / 8192
+  Layer 6: 5658 / 8192
+  Layer 7: 5711 / 8192
+  Layer 8: 5375 / 8192
+  Layer 9: 5359 / 8192
+  Layer 10: 5521 / 8192
+  Layer 11: 6315 / 8192
+  Layer 12: 7112 / 8192
+  Layer 13: 7178 / 8192
+  Layer 14: 7154 / 8192
+  Layer 15: 6468 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.63
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.63/pruning_stats.json
+
+================================================================================
+Processing sparsity level: 80.00%
+================================================================================
+Loading fresh model...
+
+Pruning 104857 / 131072 neurons (80.0%)
+Neurons pruned per layer (showing non-zero only):
+  Layer 0: 3798 / 8192
+  Layer 1: 6223 / 8192
+  Layer 2: 6288 / 8192
+  Layer 3: 5845 / 8192
+  Layer 4: 6032 / 8192
+  Layer 5: 6530 / 8192
+  Layer 6: 6729 / 8192
+  Layer 7: 6697 / 8192
+  Layer 8: 6525 / 8192
+  Layer 9: 6516 / 8192
+  Layer 10: 6837 / 8192
+  Layer 11: 7333 / 8192
+  Layer 12: 7594 / 8192
+  Layer 13: 7548 / 8192
+  Layer 14: 7446 / 8192
+  Layer 15: 6916 / 8192
+
+Saving model to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.8
+Saved pruning statistics to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.8/pruning_stats.json
+
+================================================================================
+All attribution-based models created successfully!
+================================================================================
+
+================================
+Attribution pruned models created!
+================================
+Job completed at Wed Oct 22 16:18:49 EDT 2025

@@ -1,0 +1,16 @@
+Loading model from /n/netscratch/iaifi_lab/Lab/ericjm/narrow/tuneprune15-redo/lambda_0.0005_bs_18_acc_6/checkpoint-70000...
+Loading dataset...
+Baseline evaluation...
+Baseline test accuracy: 0.251
+Fine-tuning...
+Epoch 1 avg loss: 1.4660
+  Test accuracy: 0.248
+Epoch 2 avg loss: 1.3971
+  Test accuracy: 0.248
+
+Final evaluation...
+Final test accuracy: 0.248
+
+Results saved to ../results/lambda_0.0005_bs_18_acc_6/ai2_arc/results.json
+Accuracy change: 0.251 -> 0.248 (-0.003)
+Job completed at Sun Oct 19 09:48:54 EDT 2025

@@ -1,0 +1,31 @@
+================================================================================
+Downstream Evaluation with LR Sweep
+================================================================================
+Model: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/attribution_pruned/sparsity_0.8
+Dataset: ai2_arc
+LR sweep: [1e-06, 5e-06, 1e-05, 2e-05, 5e-05]
+================================================================================
+
+Loading model...
+Baseline evaluation...
+Baseline: 0.249
+
+Fine-tuning with lr=1e-06...
+  Final: 0.253
+Fine-tuning with lr=5e-06...
+  Final: 0.248
+Fine-tuning with lr=1e-05...
+  Final: 0.248
+Fine-tuning with lr=2e-05...
+  Final: 0.248
+Fine-tuning with lr=5e-05...
+  Final: 0.248
+
+================================================================================
+Results saved to: /n/netscratch/iaifi_lab/Lab/ericjm/narrow/pruned_downstream_results/attribution_sparsity_0.8/ai2_arc/results.json
+Baseline: 0.249
+Best LR: 1e-06
+Best Accuracy: 0.253
+Improvement: +0.004
+================================================================================
+Job completed at Wed Oct 22 19:25:47 EDT 2025
